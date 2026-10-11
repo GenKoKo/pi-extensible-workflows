@@ -9,7 +9,7 @@ import { acquireSessionLease, hasLiveSessionLease, json, projectSessionsDirector
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REQUIRED_RUN_FILES = ["workflow.js", "state.json", "snapshot.json", "journal.json", "ownership.json", "worktrees.json", "borrowed-worktrees.json", "system-prompts.json"] as const;
 const OPTIONAL_RUN_FILES = new Set(["result.json", "summary.json"]);
-const RUN_DIRECTORIES = new Set(["worktrees", ".system-prompts"]);
+const RUN_DIRECTORIES = new Set(["worktrees", ".system-prompts", "evidence"]);
 const RUN_FILES = new Set<string>([...REQUIRED_RUN_FILES, ...OPTIONAL_RUN_FILES]);
 // String-keyed views of the core vocabularies: persisted files are read as unknown, so membership is checked on plain strings.
 const AGENT_STATES = new Set<string>(CORE_AGENT_STATES);
@@ -180,11 +180,23 @@ function validateOwnershipRecord(value: unknown, label: string, ownershipIds: Re
   optionalString(value.prompt, `${label}.prompt`);
   validateScheduledOptions(value.options, `${label}.options`);
 }
+async function validateEvidence(store: RunStore): Promise<void> {
+  const dir = join(store.directory, "evidence");
+  const entries = await readdir(dir, { withFileTypes: true }).catch((error: unknown) => { if (isNodeError(error, "ENOENT")) return [] as import("node:fs").Dirent[]; throw error; });
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Evidence artifact is not a regular file: ${join(dir, entry.name)}`);
+    if (!/^[0-9a-f]{64}\.txt$/.test(entry.name)) throw new Error(`Evidence file name is invalid: ${join(dir, entry.name)}`);
+    const sha = entry.name.slice(0, 64);
+    const content = await readFile(join(dir, entry.name), "utf8");
+    if (createHash("sha256").update(content).digest("hex") !== sha) throw new Error(`Evidence artifact content does not match checksum: ${join(dir, entry.name)}`);
+  }
+}
 async function validateRunArtifacts(store: RunStore, workflowScript: string, state: RunState): Promise<readonly { sourceRunId: string }[]> {
   await validateRunDirectory(store);
   for (const name of REQUIRED_RUN_FILES) await requiredFile(join(store.directory, name));
   if (await readFile(join(store.directory, "workflow.js"), "utf8") !== workflowScript) throw new Error("Persisted workflow source does not match its launch snapshot");
   await validateSystemPrompts(store);
+  await validateEvidence(store);
   const result = await json(join(store.directory, "result.json")).catch((error: unknown) => { if (isNodeError(error, "ENOENT")) return undefined; throw error; });
   if (result === undefined && state === "completed") throw new Error("Completed run result is missing");
   if (result !== undefined && !jsonValue(result)) throw new Error("Persisted workflow result is invalid");

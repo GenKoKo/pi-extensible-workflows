@@ -359,6 +359,14 @@ export function withWorkflowFunctions(bridge: WorkflowBridge, store: RunStore, r
       },
       phase: (name: string) => { ownSideEffect(() => bridge.phase?.(name)); },
       log: (message: string) => { ownSideEffect(() => bridge.log?.(message)); },
+      evidence: async (content) => {
+        if (!bridge.evidence) fail("INTERNAL_ERROR", "No evidence bridge is available");
+        return bridge.evidence(content, signal);
+      },
+      readEvidence: async (ref) => {
+        if (!bridge.evidenceRead) fail("INTERNAL_ERROR", "No evidence bridge is available");
+        return bridge.evidenceRead(ref, signal);
+      },
     };
     const result = await inheritedHostAgentPath.run([...structuralPath], async () => registry.invokeFunction(name, input, context, path, { get: () => replayed?.value, put: (_path, value) => { stored = value; } }));
     await Promise.all(sideEffects);

@@ -5,7 +5,8 @@ import { finiteNumber, isThinkingLevel, isWorkflowErrorCode, jsonValue, object, 
 export interface EffectiveSystemPrompt { sessionId: string; attempt: number; turn: number; sha256: string; prompt: string }
 export type PersistedRun = RunRecord;
 export interface RunSummaryAgent { id: string; name: string; label?: string; state: string; attempts: number }
-export interface RunSummaryArtifacts { runDirectory: string; statePath: string; journalPath: string; snapshotPath: string; workflowPath: string; resultPath: string; summaryPath: string }
+export interface RunSummaryArtifacts { runDirectory: string; statePath: string; journalPath: string; snapshotPath: string; workflowPath: string; resultPath: string; summaryPath: string; evidenceDirectory?: string }
+export interface EvidenceRecord { ref: string; sha256: string; path: string; bytes: number }
 export interface RunSummary { schemaVersion: 1; runId: string; sessionId: string; workflowName: string; state: RunRecord["state"]; createdAt: string; updatedAt: string; terminalAt?: string; usage: WorkflowBudgetUsage; agents: readonly RunSummaryAgent[]; error?: RunRecord["error"]; failedAt?: string; replayablePaths: readonly string[]; incompletePaths: readonly string[]; artifacts: RunSummaryArtifacts }
 export interface CompletedOperation { path: string; value: JsonValue }
 export interface AwaitingCheckpoint { path: string; name: string; prompt: string; context: JsonValue }

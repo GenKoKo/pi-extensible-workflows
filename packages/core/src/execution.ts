@@ -355,8 +355,20 @@ const pipeline = async (operationName, items, stages) => {
   if (failure) throw Object.assign(workflowError(failure.error), { failedAt: failure.failedAt });
   return Object.fromEntries(results.map(result => [result.name, result.value]));
 };
+const guardedEvidenceResult = result => guardedResult(result, "evidence");
+const evidence = (...values) => {
+  if (values.length !== 1 || values[0] === undefined) throw workError("INVALID_METADATA", "evidence requires one value argument");
+  return guardedEvidenceResult(rpc("evidence", [values[0]]));
+};
+evidence.read = (...values) => {
+  if (values.length !== 1) throw workError("INVALID_METADATA", "evidence.read requires one reference argument");
+  const target = values[0];
+  const ref = target && typeof target === "object" ? target.ref || target.sha256 || target.path : target;
+  if (typeof ref !== "string" || !ref.trim()) throw workError("INVALID_METADATA", "evidence.read requires a reference string or evidence record");
+  return guardedEvidenceResult(rpc("evidenceRead", [ref]));
+};
 const safeMath = Object.fromEntries(Object.getOwnPropertyNames(Math).filter(name => name !== "random").map(name => [name, Math[name]]));
-const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, parallel, pipeline, phase, log, tools, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
+const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, parallel, pipeline, phase, log, tools, evidence, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
 for (const [name, fn] of Object.entries(functions)) Object.defineProperty(sandbox, name, { value: fn, writable: false, configurable: false });
 for (const name of ["Date","eval","Function","WebAssembly","process","require","module","exports","console","fetch","XMLHttpRequest","WebSocket","performance","crypto","setTimeout","setInterval","setImmediate","queueMicrotask","Intl","SharedArrayBuffer","Atomics"]) sandbox[name] = undefined;
 const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
@@ -638,6 +650,16 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
       } else if (method === "log") {
         if (typeof values[0] !== "string") fail("INTERNAL_ERROR", "log message must be a string");
         await bridge.log?.(values[0]);
+      } else if (method === "evidence") {
+        if (values.length !== 1 || !jsonValue(values[0])) fail("INTERNAL_ERROR", "evidence requires a JSON-compatible value");
+        if (!bridge.evidence) fail("INTERNAL_ERROR", "No evidence bridge is available");
+        const stored = await bridge.evidence(values[0], controller.signal);
+        value = stored as unknown as JsonValue;
+      } else if (method === "evidenceRead") {
+        if (typeof values[0] !== "string" || !values[0].trim()) fail("INTERNAL_ERROR", "evidence reference must be a string");
+        if (!bridge.evidenceRead) fail("INTERNAL_ERROR", "No evidence bridge is available");
+        const read = await bridge.evidenceRead(values[0], controller.signal);
+        value = read;
       }
       else fail("INTERNAL_ERROR", `Unknown worker RPC method: ${method}`);
       encoded(value);

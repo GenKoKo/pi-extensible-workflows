@@ -915,3 +915,43 @@ void test("authoritative state writes survive summary projection failures", asyn
   if (!isTestRecord(journal.completed)) throw new Error("Persisted journal completed entries were malformed");
   assert.deepEqual(journal.completed["agent/one"], { path: "agent/one", value: "done" });
 });
+void test("stores, dedupes, lists, and reads evidence artifacts by reference", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-evidence-"));
+  const cwd = join(home, "project");
+  const store = new RunStore(cwd, "session-a", "run-a", home);
+  await store.create(run(cwd), snapshot);
+
+  const textPayload = "Hello, world of evidence!";
+  const record1 = await store.saveEvidence(textPayload);
+  assert.match(record1.ref, /^ref:sha256:[0-9a-f]{16}$/);
+  assert.equal(record1.bytes, Buffer.byteLength(textPayload, "utf8"));
+  assert.ok(existsSync(record1.path));
+
+  // Saving identical content deduplicates
+  const record2 = await store.saveEvidence(textPayload);
+  assert.equal(record2.ref, record1.ref);
+  assert.equal(record2.sha256, record1.sha256);
+  assert.equal(record2.path, record1.path);
+
+  // JSON objects work too
+  const jsonPayload = { key: "value", number: 42 };
+  const recordJson = await store.saveEvidence(jsonPayload);
+  assert.match(recordJson.ref, /^ref:sha256:[0-9a-f]{16}$/);
+
+  // Read back by full ref
+  assert.equal(await store.readEvidence(record1.ref), textPayload);
+
+  // Read back by sha256
+  assert.equal(await store.readEvidence(record1.sha256), textPayload);
+
+  // Read back JSON
+  const readJson = await store.readEvidence(recordJson.ref);
+  assert.deepEqual(JSON.parse(readJson), jsonPayload);
+
+  // List evidence
+  const list = await store.listEvidence();
+  assert.equal(list.length, 2);
+
+  // Missing evidence throws RESULT_INVALID
+  await assert.rejects(store.readEvidence("ref:sha256:0000000000000000"), (error: unknown) => error instanceof WorkflowError && error.code === "RESULT_INVALID");
+});

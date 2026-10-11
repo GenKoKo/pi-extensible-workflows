@@ -537,3 +537,45 @@ void test("unawaited agent, shell, and function results refuse serialization and
   }
   assert.equal(await runWorkflow(`const [a, s, f] = await Promise.all([agent("a"), shell("true"), helper({})]); return JSON.stringify([a, s.exitCode, f]);`, null, bridge).result, JSON.stringify(["agent-value", 0, "function-value"]));
 });
+
+void test("workflow scripts store and read evidence artifacts", async () => {
+  const stored = new Map<string, string>();
+  const bridge = {
+    evidence: async (content: string | JsonValue) => {
+      const raw = typeof content === "string" ? content : JSON.stringify(content);
+      const ref = "ref:sha256:1234567890abcdef";
+      stored.set(ref, raw);
+      return { ref, sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", path: "/tmp/evidence.txt", bytes: raw.length };
+    },
+    evidenceRead: async (ref: string) => {
+      const found = stored.get(ref);
+      if (!found) throw new WorkflowError("RESULT_INVALID", "Not found");
+      return found;
+    },
+  };
+
+  const script = `
+    const rec = await evidence("large test log payload");
+    const readBack = await evidence.read(rec.ref);
+    const readByRecord = await evidence.read(rec);
+    return { rec, readBack, readByRecord };
+  `;
+  const result = await runWorkflow(script, null, bridge).result as { rec: { ref: string }; readBack: string; readByRecord: string };
+  assert.equal(result.rec.ref, "ref:sha256:1234567890abcdef");
+  assert.equal(result.readBack, "large test log payload");
+  assert.equal(result.readByRecord, "large test log payload");
+});
+
+void test("unawaited evidence results refuse serialization and interpolation with a typed error", async () => {
+  const bridge = {
+    evidence: async () => ({ ref: "ref:sha256:1234567890abcdef", sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", path: "/tmp/evidence.txt", bytes: 10 }),
+  };
+  const cases: readonly [string, RegExp][] = [
+    [`const pending = evidence("a"); return JSON.stringify({ pending });`, /Workflow evidence result is a Promise; await it before serialization/],
+    [`const pending = evidence("a"); return \`\${pending}\`;`, /Workflow evidence result is a Promise; await it before interpolation/],
+    [`const pending = evidence("a"); return "" + pending;`, /Workflow evidence result is a Promise; await it before interpolation/],
+  ];
+  for (const [script, message] of cases) {
+    await assert.rejects(runWorkflow(script, null, bridge).result, (error: unknown) => error instanceof WorkflowError && error.code === "INVALID_METADATA" && message.test(error.message), script);
+  }
+});

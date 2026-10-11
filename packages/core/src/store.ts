@@ -11,7 +11,7 @@ import {
   decodeWorktreeReferences,
   type AwaitingCheckpoint, type BorrowedWorktreeBinding, type CompletedOperation, type EffectiveSystemPrompt,
   type Journal, type PendingWorkflowDecision, type PersistedOwnershipNode,
-  type PersistedRun, type RunSummary, type RunSummaryArtifacts, type WorktreeReference,
+  type PersistedRun, type RunSummary, type RunSummaryArtifacts, type WorktreeReference, type EvidenceRecord,
 } from "./decoders.js";
 import { atomicJson, atomicPrettyJson, atomicWriteFile, git, gitIdentity, json } from "./io.js";
 import { runsDirectory, safePart, structuralPath } from "./paths.js";
@@ -21,7 +21,7 @@ const SYSTEM_PROMPT_RECORDS = "records";
 const SYSTEM_PROMPT_BODIES = "bodies";
 const SYSTEM_PROMPT_SEQUENCE = "sequence";
 const SYSTEM_PROMPT_ARTIFACT = { version: 2 as const, format: "append-only" as const, storage: SYSTEM_PROMPT_STORAGE };
-function summaryArtifacts(directory: string): RunSummaryArtifacts { return { runDirectory: directory, statePath: join(directory, "state.json"), journalPath: join(directory, "journal.json"), snapshotPath: join(directory, "snapshot.json"), workflowPath: join(directory, "workflow.js"), resultPath: join(directory, "result.json"), summaryPath: join(directory, "summary.json") }; }
+function summaryArtifacts(directory: string): RunSummaryArtifacts { return { runDirectory: directory, statePath: join(directory, "state.json"), journalPath: join(directory, "journal.json"), snapshotPath: join(directory, "snapshot.json"), workflowPath: join(directory, "workflow.js"), resultPath: join(directory, "result.json"), summaryPath: join(directory, "summary.json"), evidenceDirectory: join(directory, "evidence") }; }
 function summaryFromRun(run: PersistedRun, directory: string, journal: Journal, previous: Partial<RunSummary> | undefined, fallbackCreatedAt: string, now = new Date().toISOString()): RunSummary {
   const createdAt = typeof previous?.createdAt === "string" ? previous.createdAt : fallbackCreatedAt;
   const failedAt = run.failedAt ?? run.error?.failedAt;
@@ -800,6 +800,50 @@ export class RunStore {
 
   async resultBytes(): Promise<number> {
     return (await stat(join(this.directory, "result.json"))).size;
+  }
+
+  evidenceDirectory(): string { return join(this.directory, "evidence"); }
+
+  async saveEvidence(content: string | JsonValue): Promise<EvidenceRecord> {
+    const raw = typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`;
+    const sha256 = createHash("sha256").update(raw).digest("hex");
+    const ref = `ref:sha256:${sha256.slice(0, 16)}`;
+    const dir = this.evidenceDirectory();
+    const targetPath = join(dir, `${sha256}.txt`);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    try {
+      await access(targetPath);
+    } catch {
+      await atomicWriteFile(targetPath, raw);
+    }
+    return { ref, sha256, path: targetPath, bytes: Buffer.byteLength(raw, "utf8") };
+  }
+
+  async readEvidence(ref: string): Promise<string> {
+    const dir = this.evidenceDirectory();
+    let sha = ref.trim();
+    if (sha.startsWith("ref:sha256:")) sha = sha.slice("ref:sha256:".length);
+    const names = await readdir(dir).catch(() => [] as string[]);
+    const match = names.find((name) => name === `${sha}.txt` || (sha.length >= 8 && name.startsWith(sha) && name.endsWith(".txt")));
+    if (!match) throw new WorkflowError("RESULT_INVALID", `Evidence reference not found: ${ref}`);
+    return await readFile(join(dir, match), "utf8");
+  }
+
+  async listEvidence(): Promise<readonly EvidenceRecord[]> {
+    const dir = this.evidenceDirectory();
+    const names = await readdir(dir).catch(() => [] as string[]);
+    const results: EvidenceRecord[] = [];
+    for (const name of names) {
+      if (!name.endsWith(".txt")) continue;
+      const sha256 = name.slice(0, -4);
+      if (!/^[0-9a-f]{64}$/.test(sha256)) continue;
+      const targetPath = join(dir, name);
+      try {
+        const fileStat = await stat(targetPath);
+        results.push({ ref: `ref:sha256:${sha256.slice(0, 16)}`, sha256, path: targetPath, bytes: fileStat.size });
+      } catch { /* Ignore concurrently removed files. */ }
+    }
+    return results;
   }
 
   async delete(confirmed: boolean): Promise<void> {
