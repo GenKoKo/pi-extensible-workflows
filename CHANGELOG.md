@@ -1,13 +1,21 @@
 # Changelog
 ## Unreleased
 
+## [6.2.1] - 2026-10-13
+
 ### New capabilities
 
 - Registered functions can create persistent agent handles with `context.agent.create({ name, ... })` and `handle.send(...)`, with the same rules as scripts. Handle journal identity is scoped by function invocation, branch, worktree, and name. The bundled `reviewLoop` now uses one persistent developer and a fresh reviewer each iteration.
 
 ### Fixes
 
+- Trajectory displays agent and system prompts as complete escaped plain text, so XML-style sections such as `<addendum>`, `<skills>`, and `<project_context>` remain visible instead of being interpreted as HTML inside Markdown. Browser regressions verify line breaks and safe rendering.
 - `agent(...)` and `handle.send(...)` now deliver the supplied text as the whole user message, on first and later turns. The repeated Workflow/Agent/Phase/Parent header, ownership paragraph, and `Task:` wrapper are gone. The `workflow_result` once-per-turn contract moved into that tool's description, child ownership into the `agent` tool description, and retry or soft-budget notes into separate control text after the task (a steered message on local sessions, appended to the pane launch prompt on Herdr; custom transports that do not set `turnControlDelivered` get the steered message). The system prompt is unchanged, so prompt caching is unaffected.
+
+### Documentation and metadata
+
+- Clarified that the workflow `model` option is optional; omitting it uses the configured defaults.
+- Updated the core package description and keywords to include codemode scripts.
 
 ## [6.2.0] - 2026-10-10
 
