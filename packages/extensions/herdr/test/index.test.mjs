@@ -556,6 +556,43 @@ void test("preserves an initial pane launch error when local disposal also fails
     await rm(root, { recursive: true, force: true });
   }
 });
+void test("delivers per-attempt turn control through the pane launch prompt without steering the suspended session", { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-turn-control-"));
+  const agentDir = join(root, "agent");
+  mkdirSync(join(agentDir, "pi-extensible-workflows"), { recursive: true });
+  writeFileSync(join(agentDir, "pi-extensible-workflows", "settings.json"), JSON.stringify({ extensionSettings: { herdr: { enableFullyInspectableMode: true } } }));
+  let tabCount = 0;
+  let launchedPrompt;
+  const runner = async (args) => {
+    if (args[0] === "workspace" && args[1] === "create") return JSON.stringify({ result: { workspace: { workspace_id: "ws" }, tab: { tab_id: "tab-root" }, root_pane: { pane_id: "pane-root" } } });
+    if (args[0] === "tab" && args[1] === "create") { tabCount += 1; return JSON.stringify({ result: { tab: { tab_id: `tab-${tabCount}` }, root_pane: { pane_id: `pane-${tabCount}` } } }); }
+    if (args[0] === "pane" && args[1] === "run") {
+      const script = /sh '([^']+)'/.exec(args[3])?.[1];
+      const file = script ? /@'?([^'\s]+)'?/.exec(readFileSync(script, "utf8"))?.[1] : undefined;
+      if (file) launchedPrompt = readFileSync(file, "utf8");
+      return "";
+    }
+    if (args[0] === "pane" && args[1] === "process-info") return JSON.stringify({ result: { process_info: { foreground_processes: [] } } });
+    return "";
+  };
+  const extension = createHerdrExtension({ agentDir, env: { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/tmp/herdr.sock", HERDR_PANE_ID: "parent" }, runner });
+  const agent = { transport: localAgentTransport };
+  const context = { identity: { structuralPath: ["review"], parentBreadcrumb: "flow", callSite: "agent", occurrence: 1 }, run: { runId: "run", workflow: { name: "flow" } }, signal: new AbortController().signal };
+  extension.agentSetupHooks.fullyInspectable.setup(agent, context);
+  let fixture;
+  let session;
+  try {
+    fixture = await createFixtureModel(agentDir);
+    const prepared = { cwd: root, agentDir, model: { provider: "fixture", model: "fixture-model" }, tools: [], initialPrompt: "the task", turnControl: "Retry attempt 2", sessionLabel: "flow:review", piRuntime };
+    session = await agent.transport.createSession(prepared, { ...context, attempt: 2 });
+    assert.equal(launchedPrompt, "the task\n\nRetry attempt 2");
+    assert.equal(session.turnControlDelivered, true);
+  } finally {
+    await Promise.allSettled([session?.dispose()]);
+    await fixture?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 void test("clears the active pane after a failed pane monitor so the next prompt can launch", { timeout: 30_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-failed-resume-pane-"));
   const agentDir = join(root, "agent");

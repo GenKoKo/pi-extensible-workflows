@@ -172,7 +172,7 @@ export class PiRuntimeAgentRunner implements RuntimeAgentRunner {
     let structuredResult: RuntimeJsonValue | undefined;
     const resultTool = prepared.resultTool;
     if (!resultTool) throw new WorkflowError("INTERNAL_ERROR", "Workflow agent session is missing its workflow_result tool");
-    const preparedForSession = preparedForRuntimeRequest(prepared, request.customTools, request.signal, (value) => { structuredResult = value; }, resultTool);
+    const preparedForSession = Object.freeze({ ...preparedForRuntimeRequest(prepared, request.customTools, request.signal, (value) => { structuredResult = value; }, resultTool), ...(request.turnControl ? { turnControl: request.turnControl } : {}) });
     const callbacks = this.#options.callbacks;
     const handoff = this.#options.handoff;
     let adapter: PiRuntimeSessionAdapter | undefined;
@@ -364,6 +364,8 @@ export class PiRuntimeAgentRunner implements RuntimeAgentRunner {
       throwIfProgressFailed();
       beginTurn(false);
       throwIfTurnPolicyFailed();
+      // NOTE: A transport that already sent turnControl (Herdr, in its pane launch prompt) reports turnControlDelivered; steering its suspended local session would fail.
+      if (request.turnControl && !session.turnControlDelivered) await activeSession.steer(request.turnControl);
       await promptAndRecover(request.task, true);
       completeTurn(hasResult() || !hasToolCall(lastAssistant), false, true);
       if (turnPolicyFailure) throw turnPolicyFailure;

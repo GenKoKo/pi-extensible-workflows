@@ -788,7 +788,7 @@ void test("shared worktree scopes persist one owner across production agents and
       sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }], getSessionStats: sessionStats,
       prompt: async (prompt) => {
         writeFileSync(join(input.cwd, `${sessionId}.txt`), sessionId);
-        if (prompt.includes("Task:\nretry") && failRetry) { failRetry = false; throw new Error("retry once"); }
+        if (prompt === "retry" && failRetry) { failRetry = false; throw new Error("retry once"); }
         const childTool = input.customTools?.find(({ name }) => name === "agent");
         const resultTool = input.customTools?.find(({ name }) => name === "get_subagent_result");
         if (!spawnedChild && childTool && resultTool) {

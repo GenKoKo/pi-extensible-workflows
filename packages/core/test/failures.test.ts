@@ -229,7 +229,7 @@ void test("foreground failure results reload settled sibling agent states", asyn
       messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
       getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
       async prompt(text) {
-        if (text.includes("Task:\ngood")) { goodActive = true; await goodHold; if (goodAborted) throw new WorkflowError("CANCELLED", "good cancelled"); return; }
+        if (text === "good") { goodActive = true; await goodHold; if (goodAborted) throw new WorkflowError("CANCELLED", "good cancelled"); return; }
         throw new Error("sibling failure");
       },
       abort: async () => { if (goodActive) { goodAborted = true; releaseGood(); } },

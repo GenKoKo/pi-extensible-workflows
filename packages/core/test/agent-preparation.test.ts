@@ -170,7 +170,7 @@ void test("execution applies the generic prepared display label", async (t) => {
     async createSession(prepared) {
       inspected = true;
       assert.equal(prepared.sessionLabel, "test:prepared-label:attempt-1");
-      assert.match(prepared.initialPrompt ?? "", /Agent: prepared-label/);
+      assert.equal(prepared.initialPrompt, "task");
       throw new Error("stopped after inspection");
     },
   });

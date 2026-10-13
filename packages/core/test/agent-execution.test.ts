@@ -7,10 +7,10 @@ import test from "node:test";
 import { Type } from "@earendil-works/pi-ai";
 import { Value } from "typebox/value";
 import type { DefaultResourceLoader, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createLocalPiSession, FairAgentScheduler, flushExtensionProviders, localAgentTransport, prepareAgentSetupForInspection, WorkflowAgentExecutor, type AgentExecutionRoot, type AgentProgress, type SessionInput } from "../src/agent-execution.js";
+import { createLocalPiSession, FairAgentScheduler, flushExtensionProviders, localAgentTransport, prepareAgentSetupForInspection, WorkflowAgentExecutor, type AgentExecutionOptions, type AgentExecutionRoot, type AgentProgress, type SessionInput } from "../src/agent-execution.js";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { reachableTools, WorkflowError, type AgentExecutionResult, type AgentToolCallProgress } from "../src/index.js";
-import type { AgentResourcePolicy } from "../src/types.js";
+import type { AgentResourcePolicy, JsonSchema } from "../src/types.js";
 import type { RunStore } from "../src/persistence.js";
 import { testTransport, type TestPiSessionEvent } from "./test-transport.js";
 import { executeTool, executeToolUnchecked, testTransportContext } from "./support.js";
@@ -122,19 +122,22 @@ async function createRespondingLocalSession(extensionFactories: NonNullable<Sess
   }
 }
 async function settlesWithin(promise: Promise<unknown>, timeoutMs = 2_000): Promise<boolean> { return await new Promise((resolve) => { const timer = setTimeout(() => { resolve(false); }, timeoutMs); promise.then(() => { clearTimeout(timer); resolve(true); }, () => { clearTimeout(timer); resolve(true); }); }); }
-void test("instructs unstructured agents to submit workflow_result", async () => {
+void test("keeps the workflow_result contract in the tool for unstructured agents", async () => {
   let prompt = "";
   let resultParameters: unknown;
+  let resultDescription = "";
   const executor = new WorkflowAgentExecutor(root, testTransport(async (input) => {
     assert.ok(input.resultTool);
     resultParameters = input.resultTool.parameters;
+    resultDescription = input.resultTool.description;
     return { sessionId: "unstructured-result", messages: [assistant("done")], getSessionStats: sessionStats, async prompt(text) { prompt = text; }, dispose() {} };
   }));
   assert.equal((await executor.execute("work", { label: "worker", workflowName: "flow" })).value, "done");
-  assert.match(prompt, /Call workflow_result exactly once/);
+  assert.equal(prompt, "work");
+  assert.match(resultDescription, /Call exactly once/);
   assert.deepEqual(resultParameters, defaultWorkflowResultSchema);
 });
-void test("passes the generated workflow prompt to an eager transport", async () => {
+void test("passes the supplied task as the initial prompt to an eager transport", async () => {
   let launchPrompt = "";
   const transport = {
     id: "eager",
@@ -159,7 +162,7 @@ void test("passes the generated workflow prompt to an eager transport", async ()
   } satisfies import("../src/types.js").AgentTransport;
   const result = await new WorkflowAgentExecutor({ ...root, agentSetupHooks: [{ name: "replace", priority: 1, setup(agent) { agent.transport = transport; } }] }, localAgentTransport).execute("work", { label: "worker", workflowName: "flow" });
   assert.equal(result.value, "done");
-  assert.match(launchPrompt, /Call workflow_result exactly once/);
+  assert.equal(launchPrompt, "work");
 });
 void test("does not retry an agent that omits workflow_result", async () => {
   let sessions = 0;
@@ -295,7 +298,7 @@ void test("setup hooks can wrap the selected transport session", async () => {
   const result = await new WorkflowAgentExecutor({ ...root, agentSetupHooks: [{ name: "wrap", priority: 1, setup(agent) { agent.transport = wrapped; } }] }, localAgentTransport).execute("work", { label: "worker", workflowName: "flow" });
   assert.equal(result.value, "wrapped result");
   assert.equal(result.attempts[0]?.session?.transport, "wrapped");
-  assert.match(events[0] ?? "", /^wrapper-prompt:Workflow: flow\nAgent: worker/);
+  assert.equal(events[0], "wrapper-prompt:work");
   assert.deepEqual(events.slice(1), ["base-prompt", "wrapper-result", "wrapper-dispose", "base-dispose"]);
 });
 void test("reruns setup hooks and reselects the transport for ordinary retries", async () => {
@@ -400,7 +403,7 @@ void test("passes preparation prompt as system append, not task text", async () 
   assert.equal((input as { systemPromptAppend?: string }).systemPromptAppend, "Review carefully");
   assert.deepEqual((input as { tools?: readonly string[] }).tools, ["read", "grep"]);
   assert.doesNotMatch(prompt, /Review carefully/);
-  assert.match(prompt, /Task:\nDo work/);
+  assert.equal(prompt, "Do work");
 });
 void test("prepares the resolved workflow system prompt path for external transports", async () => {
   const rootDir = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-system-prompt-path-"));
@@ -516,7 +519,7 @@ void test("returns final text and captures persisted native session accounting",
   const result = await executor.execute("Do work", { label: "worker", workflowName: "flow", phase: "build", parent: "root", cwd: root.cwd });
   assert.equal(result.value, "done");
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0] ?? "", /Workflow: flow[\s\S]*Phase: build[\s\S]*Parent: root[\s\S]*Task:\nDo work/);
+  assert.equal(prompts[0], "Do work");
   assert.deepEqual(result.attempts[0], { attempt: 1, transport: "local", session: { transport: "local", sessionId: "s1", locator: { sessionFile: "/sessions/s1.jsonl" } }, result: "done", accounting: { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.25 }, setup: { hookNames: [], model: root.model, tools: ["read", "grep", "find", "bash", "workflow_result"], cwd: "/repo", resourceSelectors: result.attempts[0]?.setup.resourceSelectors } });
 });
 
@@ -767,7 +770,7 @@ void test("continues terminal provider errors in the same native session when re
   assert.equal(recoveries.length, 1);
   assert.deepEqual(result.attempts.map(({ attempt, session }) => ({ attempt, sessionId: session?.sessionId })), [{ attempt: 1, sessionId: "same-session" }]);
   assert.equal(prompts.length, 3);
-  assert.match(prompts[0] ?? "", /Task:\nstructured/);
+  assert.equal(prompts[0], "structured");
   assert.equal(prompts[1], "The provider error was transient. Continue the task from your current state.");
   assert.match(prompts[2] ?? "", /Submit the final result/);
 });
@@ -2623,4 +2626,58 @@ void test("names a native provider in registration diagnostics", () => {
   const resourceLoader = { getExtensions: () => ({ runtime }) } as unknown as DefaultResourceLoader;
   const modelRuntime = { registerNativeProvider: () => { throw new Error("native failure"); } } as unknown as ModelRuntime;
   assert.deepEqual(flushExtensionProviders(resourceLoader, modelRuntime), ["native-acme: native failure"]);
+});
+
+const boilerplate = /Workflow: |Agent: |Phase: |Parent: |You own this task|Task:|Call workflow_result/;
+void test("delivers the supplied text as the whole user message and keeps the result contract in the tool", async () => {
+  const seen: { prompts: string[]; description: string[]; accepted: unknown[] } = { prompts: [], description: [], accepted: [] };
+  const run = async (task: string, schema?: JsonSchema, submit?: unknown): Promise<unknown> => {
+    const executor = new WorkflowAgentExecutor(root, testTransport(async ({ resultTool }) => {
+      assert.ok(resultTool);
+      seen.description.push(resultTool.description);
+      return { transport: "local", session: { transport: "local", sessionId: "s", locator: { sessionFile: "/sessions/s.jsonl" } }, messages: [assistant("")], getSessionStats: sessionStats, async prompt(text) { seen.prompts.push(text); if (submit !== undefined) seen.accepted.push(await executeToolUnchecked(resultTool, "id", submit)); }, dispose() {} };
+    }));
+    return (await executor.execute(task, { label: "worker", workflowName: "flow", phase: "build", parent: "root", cwd: root.cwd, ...(schema ? { schema } : {}) })).value;
+  };
+  assert.equal(await run("plain", undefined, { result: "ok" }), "ok");
+  assert.deepEqual(await run("structured", { type: "object", properties: { answer: { type: "number" } }, required: ["answer"], additionalProperties: false }, { answer: 1 }), { answer: 1 });
+  // A later send with another schema gets its own tool, which enforces that schema.
+  await assert.rejects(run("string", { type: "string" }, { answer: 1 }), (error: unknown) => error instanceof WorkflowError && error.code === "RESULT_INVALID");
+  const taskPrompts = seen.prompts.filter((text) => !/^Submit the final|^Your result/.test(text));
+  assert.deepEqual(taskPrompts, ["plain", "structured", "string"]);
+  assert.ok(taskPrompts.every((text) => !boilerplate.test(text)));
+  assert.ok(seen.description.every((text) => /terminal workflow result/.test(text) && /exactly once/.test(text)));
+  assert.match(seen.description[0] ?? "", /\{ result: "final response" \}/);
+  assert.match(seen.description[1] ?? "", /matching the required schema/);
+});
+void test("delivers retry state and budget instructions as a separate steered message, not in the task or system prompt", async () => {
+  const inputs: SessionInput[] = [];
+  const events: string[] = [];
+  let created = 0;
+  let instructed = false;
+  const executor = new WorkflowAgentExecutor(root, testTransport(async (input) => {
+    inputs.push(input);
+    const attempt = ++created;
+    return { transport: "local", session: { transport: "local", sessionId: `r${String(attempt)}`, locator: { sessionFile: `/sessions/r${String(attempt)}.jsonl` } }, messages: [attempt === 1 ? terminalAssistant("boom") : assistant("fine")], getSessionStats: sessionStats, async steer(text) { events.push(`steer:${text}`); }, async prompt(text) { events.push(`prompt:${text}`); }, dispose() {} };
+  }));
+  const budget: NonNullable<AgentExecutionOptions["budget"]> = { beforeAttempt() {}, beforeTurn() {}, afterTurn() {}, instruction() { if (instructed) return undefined; instructed = true; return "Budget soft limit reached."; } };
+  await executor.execute("work", { label: "worker", workflowName: "flow", retries: 1, budget });
+  assert.ok(inputs.every((input) => !input.systemPromptAppend));
+  assert.equal(events[0], "steer:Budget soft limit reached.");
+  assert.equal(events[1], "prompt:work");
+  assert.match(events[2] ?? "", /^steer:Retry attempt 2\. Previous state: boom/);
+  assert.equal(events[3], "prompt:work");
+});
+void test("does not steer turn control when the transport reports it already delivered it", async () => {
+  const events: string[] = [];
+  const executor = new WorkflowAgentExecutor(root, testTransport(async () => ({ transport: "local", session: { transport: "local", sessionId: "d1", locator: { sessionFile: "/sessions/d1.jsonl" } }, turnControlDelivered: true, messages: [assistant("fine")], getSessionStats: sessionStats, async steer(text) { events.push(`steer:${text}`); }, async prompt(text) { events.push(`prompt:${text}`); }, dispose() {} })));
+  const budget: NonNullable<AgentExecutionOptions["budget"]> = { beforeAttempt() {}, beforeTurn() {}, afterTurn() {}, instruction() { return "Budget soft limit reached."; } };
+  await executor.execute("work", { label: "worker", workflowName: "flow", budget });
+  assert.deepEqual(events, ["prompt:work"]);
+});
+void test("child-owning agents carry the ownership contract in the agent tool only", () => {
+  const scheduler = new FairAgentScheduler(async () => "unused", 1);
+  scheduler.restoreRun("run", 1, [{ id: "run:1", label: "parent", state: "running" as const, options: { label: "parent", cwd: "/repo", tools: ["agent"] } }, { id: "run:2", label: "leaf", state: "running" as const, options: { label: "leaf", cwd: "/repo", tools: ["read"] } }]);
+  assert.match(scheduler.toolsFor("run:1")[0]?.description ?? "", /You own the children you create.*do not leave descendants running/);
+  assert.deepEqual(scheduler.toolsFor("run:2"), []);
 });

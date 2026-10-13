@@ -270,6 +270,8 @@ export interface WorkflowAgentSession {
   getState(): Readonly<WorkflowAgentSessionState>;
   getSessionStats(): WorkflowAgentSessionStats;
   getLastAssistant(): WorkflowAgentMessage | undefined;
+  /** Set by a transport that already delivered `PreparedAgentSession.turnControl` itself; otherwise the runner steers it before the first prompt. */
+  readonly turnControlDelivered?: boolean;
   subscribe(listener: (event: WorkflowAgentSessionEvent) => void): () => void;
   subscribeAsync?(listener: (event: WorkflowAgentSessionEvent) => void | Promise<void>): () => void;
   prompt(text: string): Promise<WorkflowAgentTurnResult>;
@@ -313,6 +315,8 @@ export interface PreparedAgentSession {
   readonly sessionLabel: string;
   readonly sessionPath?: string;
   readonly initialPrompt?: string;
+  /** Dynamic per-attempt control text (retry state, budget). The runner steers it before the first prompt unless the session reports `turnControlDelivered`. */
+  readonly turnControl?: string;
   readonly agentDir?: string;
   readonly customTools?: readonly ToolDefinition[];
   readonly resultTool?: ToolDefinition;

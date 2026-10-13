@@ -95,6 +95,10 @@ void test("sequential handle sends continue one transcript from a per-turn sessi
   const turnInput = join(store.directory, "handles", "author", "turn-2-input-attempt-1.jsonl");
   assert.equal(current.opened[0]?.sessionPath, undefined);
   assert.equal(current.opened[1]?.sessionPath, turnInput);
+  // Fresh and continued sends deliver exactly the supplied text; the workflow_result contract lives in the tool.
+  assert.deepEqual(current.prompts, ["first draft", "apply findings"]);
+  assert.match(current.opened[1].resultTool?.description ?? "", /exactly once/);
+  assert.equal(current.opened[1].systemPromptAppend, "");
   const transcript = readFileSync(turnInput, "utf8");
   assert.match(transcript, /first draft/);
   assert.match(transcript, /apply findings/);
@@ -399,4 +403,20 @@ void test("retrying a function whose later handle turn failed replays completed 
   assert.equal(retriedTurn?.continuity, "continued");
   assert.match(current.openedInput.at(-1) ?? "", /first draft/);
   assert.doesNotMatch(current.openedInput.at(-1) ?? "", /apply findings/);
+});
+
+void test("handle sends rebuild workflow_result for each send's schema", async () => {
+  const current = host(undefined, undefined, async (text, _count, input) => { if (text === "structured") await input.resultTool?.execute("structured", { answer: "yes" }, new AbortController().signal, undefined, undefined as never); });
+  const schemaScript = `const dev = agent.create({ name: "dev" });
+const a = await dev.send("plain");
+const b = await dev.send("structured", { outputSchema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"], additionalProperties: false } });
+return { a, b };`;
+  await current.workflow.execute("schema-sends", { name: "schema-sends", script: schemaScript, foreground: true }, new AbortController().signal, undefined, current.context);
+  const store = new RunStore(current.home, "session", onlyRunId(await listRunIds(current.home, "session", current.home)), current.home);
+  const outcome = JSON.parse(readFileSync(join(store.directory, "result.json"), "utf8")) as { a: unknown; b: unknown };
+  assert.deepEqual(outcome.b, { answer: "yes" });
+  assert.equal(typeof outcome.a, "string");
+  assert.deepEqual(current.prompts.slice(0, 2), ["plain", "structured"]);
+  assert.match(current.opened[0]?.resultTool?.description ?? "", /\{ result: "final response" \}/);
+  assert.match(current.opened[1]?.resultTool?.description ?? "", /matching the required schema/);
 });
