@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { HARD_TERMINAL_RUN_STATES, WorkflowError, type PreparedAgentConfiguration, type JsonValue, type LaunchSnapshot, type WorkflowErrorCode, type WorkflowLaunchMode, type WorkflowRunEvent } from "./types.js";
 import { coerceWorkflowError, errorText, isNodeError, jsonValue, loadLaunchSnapshot, object, positiveInteger, SerialLane } from "./utils.js";
 import { budgetUsage } from "./budget.js";
@@ -807,19 +807,31 @@ export class RunStore {
 
   evidenceDirectory(): string { return join(this.directory, "evidence"); }
 
+  /** Content-addressed and journaled by digest, so a resumed or retried run gets back the record its lineage first stored. */
   async saveEvidence(content: string | JsonValue): Promise<EvidenceRecord> {
     if (typeof content !== "string" && !jsonValue(content)) throw new WorkflowError("INVALID_METADATA", "Evidence content must be a string or JSON-compatible value");
     const text = typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`;
     const raw = Buffer.from(text, "utf8");
     const sha256 = createHash("sha256").update(raw).digest("hex");
     const ref = `ref:sha256:${sha256.slice(0, 16)}`;
+    const operation = structuralPath("evidence", sha256);
+    const replayed = await this.replay(operation);
+    if (replayed) {
+      const value = replayed.value;
+      if (!object(value) || value.ref !== ref || value.sha256 !== sha256 || value.bytes !== raw.length || typeof value.path !== "string" || basename(value.path) !== `${sha256}.txt`) throw new WorkflowError("RESUME_INCOMPATIBLE", `Persisted evidence record is invalid: ${operation}`);
+      assertEvidenceIntegrity(await readFile(value.path), sha256, value.path);
+      return { ref, sha256, path: value.path, bytes: raw.length };
+    }
     const dir = this.evidenceDirectory();
     const targetPath = join(dir, `${sha256}.txt`);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const existing = await readFile(targetPath).catch((error: unknown) => { if (isNodeError(error, "ENOENT")) return undefined; throw error; });
     if (existing === undefined) await atomicWriteFile(targetPath, text);
     else assertEvidenceIntegrity(existing, sha256, targetPath);
-    return { ref, sha256, path: targetPath, bytes: raw.length };
+    const record = { ref, sha256, path: targetPath, bytes: raw.length };
+    // Identical content stored concurrently journals once; every caller returns the same record.
+    await this.updateJournal((journal) => { journal.completed[operation] ??= { path: operation, value: record }; });
+    return record;
   }
 
   async listEvidence(): Promise<readonly EvidenceRecord[]> {
@@ -839,15 +851,23 @@ export class RunStore {
     return results;
   }
 
-  /** Fails closed unless every evidence entry is a regular, correctly named file whose bytes match its SHA-256 name. A missing directory is valid. */
-  async validateEvidence(): Promise<void> {
+  /**
+   * Fails closed unless every evidence entry is a regular, correctly named file whose bytes match its SHA-256 name. A missing directory is valid.
+   * `verified` maps paths to the file identity they were hashed at, so rescans rehash only new or changed artifacts.
+   */
+  async validateEvidence(verified?: Map<string, string>): Promise<void> {
     const dir = this.evidenceDirectory();
     const entries = await readdir(dir, { withFileTypes: true }).catch((error: unknown) => { if (isNodeError(error, "ENOENT")) return []; throw error; });
     for (const entry of entries) {
       const path = join(dir, entry.name);
       if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Evidence artifact is not a regular file: ${path}`);
       if (!/^[0-9a-f]{64}\.txt$/.test(entry.name)) throw new Error(`Evidence file name is invalid: ${path}`);
+      // Taken before the read: a write during or after hashing changes ctime, so the next rescan rehashes.
+      const info = await lstat(path, { bigint: true });
+      const identity = `${String(info.dev)}:${String(info.ino)}:${String(info.size)}:${String(info.mtimeNs)}:${String(info.ctimeNs)}`;
+      if (verified?.get(path) === identity) continue;
       if (createHash("sha256").update(await readFile(path)).digest("hex") !== entry.name.slice(0, 64)) throw new Error(`Evidence artifact content does not match checksum: ${path}`);
+      verified?.set(path, identity);
     }
   }
 

@@ -973,3 +973,13 @@ void test("evidence deduplication rejects artifacts modified after saving", asyn
   await assert.rejects(store.saveEvidence("original"), rejected);
   assert.equal(readFileSync(record.path, "utf8"), "tampered");
 });
+void test("concurrent identical evidence journals one content-addressed operation", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-evidence-concurrent-"));
+  const cwd = join(home, "project");
+  const store = new RunStore(cwd, "session-a", "run-a", home);
+  await store.create(run(cwd), snapshot);
+  const [first, second] = await Promise.all([store.saveEvidence("same"), store.saveEvidence("same")]);
+  assert.deepEqual(first, second);
+  const operations = (await store.replayableOperations()).filter(({ path }) => path.startsWith("evidence/"));
+  assert.deepEqual(operations, [{ path: structuralPath("evidence", first.sha256), value: { ...first } }]);
+});

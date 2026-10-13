@@ -5,7 +5,9 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import workflowExtension, { createLaunchSnapshot, loadingRegistry, registerWorkflowExtension, RunStore, WorkflowError } from "../src/index.js";
 import { RunLifecycle, evidenceBridge } from "../src/host-runtime.js";
-import { contextualWorkflowAction, testExtensionApi } from "./support.js";
+import { contextualWorkflowAction, decodeTestRunStart, decodeTestToolResult, testExtensionApi } from "./support.js";
+import { listRunIds } from "../src/persistence.js";
+import { testTransport, type TestPiSession } from "./test-transport.js";
 
 type Command = Parameters<typeof contextualWorkflowAction>[0];
 type Tool = { name: string; execute: (...args: unknown[]) => Promise<unknown> };
@@ -132,4 +134,39 @@ void test("the evidence bridge refuses aborted signals and non-running lifecycle
     await lifecycle.pause();
     assert.equal(lifecycle.state, "paused", "the bridge leaves the lifecycle idle");
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+void test("a retry without live tools replays direct evidence and the tools.read of its original artifact", async (t) => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "workflow-evidence-retry-")));
+  t.after(() => { rmSync(home, { recursive: true, force: true }); });
+  let sessions = 0;
+  const createSession = async (): Promise<TestPiSession> => {
+    const attempt = ++sessions;
+    return { sessionId: `evidence-retry-${String(attempt)}`, sessionFile: `/sessions/evidence-retry-${String(attempt)}.jsonl`, messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }], getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 }), prompt: async () => { if (attempt === 1) throw new Error("source failure after the read"); }, steer: async () => {}, dispose() {} };
+  };
+  const tools: Tool[] = [];
+  workflowExtension(testExtensionApi({ registerTool(tool: Tool) { tools.push(tool); }, registerCommand() {}, on() {}, getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"] }), home, async () => {}, testTransport(createSession));
+  const workflow = tools.find(({ name }) => name === "workflow");
+  const retry = tools.find(({ name }) => name === "workflow_retry");
+  assert.ok(workflow && retry);
+  let reads = 0;
+  const context = { cwd: home, model: { provider: "openai", id: "gpt" }, sessionManager: { getSessionId: () => "session" } };
+  const toolContext = { ...context, tools: [{ name: "read" }], executeTool: async (_name: string, args: { path: string }) => { reads += 1; return { result: { content: [{ type: "text", text: readFileSync(args.path, "utf8") }] }, isError: false }; } };
+  const script = 'const record = await evidence("full original log"); const text = await tools.read({ path: record.path }); await agent("gate"); return { record, text };';
+  await assert.rejects(workflow.execute("source", { name: "evidence-retry", script, foreground: true }, new AbortController().signal, undefined, toolContext), WorkflowError);
+  const [sourceId] = await listRunIds(home, "session", home);
+  assert.ok(sourceId);
+  const source = new RunStore(home, "session", sourceId, home);
+  assert.equal((await source.load()).run.state, "failed");
+  assert.equal(reads, 1);
+  const [original] = await source.listEvidence();
+  assert.ok(original);
+  // No executeTool: the retry can only replay journaled tool calls, as from the navigator or session startup.
+  const started = decodeTestRunStart(decodeTestToolResult(await retry.execute("retry", { runId: sourceId, foreground: true }, undefined, undefined, context)).content[0]?.text ?? "null");
+  const child = new RunStore(home, "session", started.runId, home);
+  const loaded = (await child.load()).run;
+  assert.equal(loaded.state, "completed", JSON.stringify(loaded.error));
+  assert.deepEqual(JSON.parse(readFileSync(join(child.directory, "result.json"), "utf8")), { record: original, text: "full original log" });
+  assert.equal(reads, 1, "the read is replayed, not rerun");
+  assert.deepEqual(evidenceFiles(child), [], "the original artifact is reused");
 });
