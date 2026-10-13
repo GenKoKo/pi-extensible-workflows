@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import test from "node:test";
 import { testExtensionApi } from "./support.js";
 import workflowExtension, { createLaunchSnapshot, registerWorkflowExtension, RunStore, runWorkflow, structuralPath, WorkflowError, WorkflowRegistry, type JsonValue, type WorkflowFunctionContext } from "../src/index.js";
 import { loadingRegistry } from "../src/registry.js";
+import { scriptToolValue } from "../src/script-tools.js";
 import { withWorkflowFunctions, workflowRunContext } from "../src/host-runtime.js";
 import type { SessionInput } from "../src/agent-execution.js";
 
@@ -493,4 +494,40 @@ assert.equal(catalogActive(), true);
 await runtime.dispose();
 `;
   execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: process.cwd(), stdio: "pipe" });
+});
+void test("a replayed registered function returns the original evidence record, readable with tools.read", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-evidence-retry-"));
+  const cwd = join(home, "project");
+  let producerRuns = 0;
+  const registry = new WorkflowRegistry();
+  registry.register({
+    version: "1.0.0", headline: "Evidence producer",
+    functions: {
+      producer: {
+        description: "Saves evidence", input: { type: "object", additionalProperties: false },
+        output: { type: "object", properties: { ref: { type: "string" }, sha256: { type: "string" }, path: { type: "string" }, bytes: { type: "number" } }, required: ["ref", "sha256", "path", "bytes"], additionalProperties: false },
+        async run(_input, context) {
+          producerRuns += 1;
+          if (!context.evidence) throw new Error("Missing evidence capability");
+          return { ...(await context.evidence("full original log")) };
+        },
+      },
+    },
+  });
+  const script = "const record = await producer({}); if (args.fail) throw new Error('retry me'); return await tools.read({ path: record.path });";
+  const snapshot = createLaunchSnapshot({ script, args: null, metadata: { name: "evidence-retry" }, settings: { concurrency: 1 }, models: ["root/model"], tools: [], agentConfigurations: {}, schemas: [] });
+  const readTool = { name: "read" } as unknown as Parameters<typeof scriptToolValue>[0];
+  const execute = (store: RunStore, runId: string, fail: boolean) => {
+    const controller = new AbortController();
+    const bridge = withWorkflowFunctions({ evidence: async (content) => store.saveEvidence(content), tool: async (identifier, args) => identifier !== "read" ? assert.fail(`unexpected tool ${identifier}`) : scriptToolValue(readTool, { result: { content: [{ type: "text", text: readFileSync(typeof args.path === "string" ? args.path : assert.fail("path must be a string"), "utf8") }] }, isError: false } as unknown as Parameters<typeof scriptToolValue>[1]) }, store, workflowRunContext(cwd, "session", runId, { name: "evidence-retry" }, null, controller.signal), registry);
+    return runWorkflow(script.replace("args.fail", String(fail)), null, bridge).result;
+  };
+  const source = new RunStore(cwd, "session", "run-a", home);
+  await source.create({ id: "run-a", workflowName: "evidence-retry", cwd, sessionId: "session", state: "failed", agents: [], agentSessions: [] }, snapshot);
+  await assert.rejects(execute(source, "run-a", true), /retry me/);
+  assert.equal(producerRuns, 1);
+  const child = new RunStore(cwd, "session", "run-b", home);
+  await child.create({ id: "run-b", workflowName: "evidence-retry", cwd, sessionId: "session", state: "running", parentRunId: "run-a", retry: { sourceRunId: "run-a", lineageRootRunId: "run-a", completedPaths: [], incompletePaths: [], namedWorktrees: [] }, agents: [], agentSessions: [] }, snapshot);
+  assert.equal(await execute(child, "run-b", false), "full original log");
+  assert.equal(producerRuns, 1, "the producer must be replayed, not rerun");
 });

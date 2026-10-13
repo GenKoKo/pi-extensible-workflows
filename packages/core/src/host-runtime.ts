@@ -5,7 +5,7 @@ import { type PersistedRun, type RunStore, type WorktreeReference } from "./pers
 import { deepFreeze, errorCode, errorText, fail, isWorkflowErrorCode, jsonValue, object } from "./utils.js";
 import { validateAgentOptions, validateShellOptions, workflowPrompt } from "./validation.js";
 import { type WorkflowRegistryApi } from "./registry.js";
-import { HARD_TERMINAL_RUN_STATES, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentOptions, type AgentRecord, type BudgetEvent, type FunctionIdentity, type JsonValue, type ModelSpec, type ParallelResult, type ParallelTasks, type PipelineItems, type PipelineResult, type PipelineStages, type RunState, type WorkflowBridge, type WorkflowCheckpointState, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowExecution, type WorkflowExtensionSettings, type WorkflowFunctionContext, type WorkflowMetadata, type WorkflowRunContext, type WorkflowWorktreeCallback, type WorkflowWorktreeReference } from "./types.js";
+import { HARD_TERMINAL_RUN_STATES, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentOptions, type AgentRecord, type BudgetEvent, type EvidenceRecord, type FunctionIdentity, type JsonValue, type ModelSpec, type ParallelResult, type ParallelTasks, type PipelineItems, type PipelineResult, type PipelineStages, type RunState, type WorkflowBridge, type WorkflowCheckpointState, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowExecution, type WorkflowExtensionSettings, type WorkflowFunctionContext, type WorkflowMetadata, type WorkflowRunContext, type WorkflowWorktreeCallback, type WorkflowWorktreeReference } from "./types.js";
 import { structuralPath as operationPath } from "./persistence.js";
 
 export type WorkflowEventSink = { emit: (name: string, payload: unknown) => unknown };
@@ -278,6 +278,18 @@ async function hostPipeline<Items extends PipelineItems, Output extends JsonValu
   return Object.fromEntries(results.flatMap((result) => "value" in result ? [[result.name, result.value] as const] : [])) as PipelineResult<Items, Output>;
 }
 
+/** Evidence writes follow the run lifecycle like every other host operation: they wait while paused and never start once cancelled. */
+export function evidenceBridge(store: RunStore, lifecycle: RunLifecycle): (content: string | JsonValue, signal: AbortSignal) => Promise<EvidenceRecord> {
+  const assertActive = (signal: AbortSignal): void => { if (signal.aborted) throw new WorkflowError("CANCELLED", "Workflow cancelled"); };
+  return async (content, signal) => {
+    assertActive(signal);
+    await lifecycle.enter();
+    try {
+      assertActive(signal);
+      return await store.saveEvidence(content);
+    } finally { await lifecycle.leave(); }
+  };
+}
 export function nextNamedOccurrence(counters: Map<string, number>, label: string): string {
   const count = (counters.get(label) ?? 0) + 1;
   counters.set(label, count);
@@ -359,6 +371,11 @@ export function withWorkflowFunctions(bridge: WorkflowBridge, store: RunStore, r
       },
       phase: (name: string) => { ownSideEffect(() => bridge.phase?.(name)); },
       log: (message: string) => { ownSideEffect(() => bridge.log?.(message)); },
+      evidence: async (content) => {
+        if (!bridge.evidence) fail("INTERNAL_ERROR", "No evidence bridge is available");
+        if (!jsonValue(content)) fail("INVALID_METADATA", "evidence requires a JSON-compatible value");
+        return bridge.evidence(content, signal);
+      },
     };
     const result = await inheritedHostAgentPath.run([...structuralPath], async () => registry.invokeFunction(name, input, context, path, { get: () => replayed?.value, put: (_path, value) => { stored = value; } }));
     await Promise.all(sideEffects);

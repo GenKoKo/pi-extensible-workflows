@@ -253,6 +253,30 @@ void test("doctor cleanup fails closed for missing or corrupt persisted artifact
     assert.equal(existsSync(sibling.directory), true, mutation.file);
   }
 });
+void test("doctor cleanup hashes exact evidence bytes", async () => {
+  const now = 1_000_000_000_000;
+  const paths = fixture();
+  const valid = await makeRun(paths, "valid-evidence", "completed", now);
+  const record = await valid.saveEvidence("Unicode \u2603 evidence");
+  assert.equal(record.bytes, readFileSync(record.path).length);
+  const cleaned = await doctorCleanup({ ...paths, olderThanDays: 90, yes: true, now });
+  assert.deepEqual(cleaned.failures, []);
+  assert.equal(cleaned.deleted.length, 1);
+  assert.equal(existsSync(valid.directory), false);
+
+  const invalidPaths = fixture();
+  const invalid = await makeRun(invalidPaths, "invalid-evidence", "completed", now);
+  const sibling = await makeRun(invalidPaths, "sibling", "completed", now);
+  const replacement = await invalid.saveEvidence("\uFFFD");
+  assert.deepEqual([...readFileSync(replacement.path)], [0xef, 0xbf, 0xbd]);
+  writeFileSync(replacement.path, Buffer.from([0xff]));
+  const report = await doctorCleanup({ ...invalidPaths, olderThanDays: 90, yes: true, now });
+  assert.equal(report.failures.length, 1);
+  assert.match(report.failures[0]?.message ?? "", /Evidence artifact content does not match checksum/);
+  assert.deepEqual(report.deleted, []);
+  assert.equal(existsSync(invalid.directory), true);
+  assert.equal(existsSync(sibling.directory), true);
+});
 void test("doctor cleanup fails closed for unsafe run mutations", async () => {
   const now = 1_000_000_000_000;
   const mutations = [

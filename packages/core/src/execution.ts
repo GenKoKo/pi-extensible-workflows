@@ -213,30 +213,30 @@ const plainPromptObject = value => {
   const proto = Object.getPrototypeOf(value);
   return proto === null || Object.getPrototypeOf(proto) === null && Object.prototype.hasOwnProperty.call(proto, "constructor") && typeof proto.constructor === "function" && Function.prototype.toString.call(proto.constructor) === Function.prototype.toString.call(Object);
 };
-const promptValue = (value, at, seen) => {
+const promptValue = (value, at, seen, kind = "Prompt value") => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
-  if (typeof value === "number") { if (!Number.isFinite(value)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" must be a finite number"); return; }
-  if (typeof value !== "object") throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" cannot be " + typeof value);
-  if (typeof value.then === "function") throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" is a Promise or thenable; await it before calling prompt()");
-  if (!Array.isArray(value) && !plainPromptObject(value)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" must be a plain object");
-  if (seen.has(value)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" contains a cycle");
+  if (typeof value === "number") { if (!Number.isFinite(value)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" must be a finite number"); return; }
+  if (typeof value !== "object") throw workError("INVALID_METADATA", kind + " \"" + at + "\" cannot be " + typeof value);
+  if (typeof value.then === "function") throw workError("INVALID_METADATA", kind + " \"" + at + "\" is a Promise or thenable; await it before " + (kind === "Prompt value" ? "calling prompt()" : "storing evidence"));
+  if (!Array.isArray(value) && !plainPromptObject(value)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" must be a plain object");
+  if (seen.has(value)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" contains a cycle");
   const keys = Reflect.ownKeys(value);
   const symbol = keys.find(key => typeof key === "symbol");
-  if (symbol) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" contains a symbol key");
+  if (symbol) throw workError("INVALID_METADATA", kind + " \"" + at + "\" contains a symbol key");
   seen.add(value);
   if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) promptProperty(value, String(index), at + "[" + index + "]", seen);
+    for (let index = 0; index < value.length; index += 1) promptProperty(value, String(index), at + "[" + index + "]", seen, kind);
     for (const key of keys) {
       const index = Number(key);
-      if (key !== "length" && !(Number.isInteger(index) && index >= 0 && index < value.length && String(index) === key)) promptProperty(value, key, promptPath(at, key), seen);
+      if (key !== "length" && !(Number.isInteger(index) && index >= 0 && index < value.length && String(index) === key)) promptProperty(value, key, promptPath(at, key), seen, kind);
     }
-  } else for (const key of keys) promptProperty(value, key, promptPath(at, key), seen);
+  } else for (const key of keys) promptProperty(value, key, promptPath(at, key), seen, kind);
   seen.delete(value);
 };
-const promptProperty = (value, key, at, seen) => {
+const promptProperty = (value, key, at, seen, kind = "Prompt value") => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  if (descriptor && (descriptor.get || descriptor.set)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" cannot use getters or setters");
-  promptValue(descriptor && descriptor.value, at, seen);
+  if (descriptor && (descriptor.get || descriptor.set)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" cannot use getters or setters");
+  promptValue(descriptor && descriptor.value, at, seen, kind);
 };
 const prompt = (template, values) => {
   if (typeof template !== "string") throw workError("INVALID_METADATA", "prompt() template must be a string");
@@ -355,8 +355,14 @@ const pipeline = async (operationName, items, stages) => {
   if (failure) throw Object.assign(workflowError(failure.error), { failedAt: failure.failedAt });
   return Object.fromEntries(results.map(result => [result.name, result.value]));
 };
+const guardedEvidenceResult = result => guardedResult(result, "evidence");
+const evidence = (...values) => {
+  if (values.length !== 1 || values[0] === undefined) throw workError("INVALID_METADATA", "evidence requires one value argument");
+  promptValue(values[0], "evidence", new Set(), "Evidence value");
+  return guardedEvidenceResult(rpc("evidence", [values[0]]));
+};
 const safeMath = Object.fromEntries(Object.getOwnPropertyNames(Math).filter(name => name !== "random").map(name => [name, Math[name]]));
-const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, parallel, pipeline, phase, log, tools, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
+const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, parallel, pipeline, phase, log, tools, evidence, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
 for (const [name, fn] of Object.entries(functions)) Object.defineProperty(sandbox, name, { value: fn, writable: false, configurable: false });
 for (const name of ["Date","eval","Function","WebAssembly","process","require","module","exports","console","fetch","XMLHttpRequest","WebSocket","performance","crypto","setTimeout","setInterval","setImmediate","queueMicrotask","Intl","SharedArrayBuffer","Atomics"]) sandbox[name] = undefined;
 const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
@@ -638,8 +644,12 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
       } else if (method === "log") {
         if (typeof values[0] !== "string") fail("INTERNAL_ERROR", "log message must be a string");
         await bridge.log?.(values[0]);
-      }
-      else fail("INTERNAL_ERROR", `Unknown worker RPC method: ${method}`);
+      } else if (method === "evidence") {
+        if (values.length !== 1 || !jsonValue(values[0])) fail("INTERNAL_ERROR", "evidence requires a JSON-compatible value");
+        if (!bridge.evidence) fail("INTERNAL_ERROR", "No evidence bridge is available");
+        const stored = await bridge.evidence(values[0], controller.signal);
+        value = stored as unknown as JsonValue;
+      } else fail("INTERNAL_ERROR", `Unknown worker RPC method: ${method}`);
       encoded(value);
       child.send(encodedRpcResult(id, value));
     } catch (error) {

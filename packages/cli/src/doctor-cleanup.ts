@@ -9,7 +9,7 @@ import { acquireSessionLease, hasLiveSessionLease, json, projectSessionsDirector
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REQUIRED_RUN_FILES = ["workflow.js", "state.json", "snapshot.json", "journal.json", "ownership.json", "worktrees.json", "borrowed-worktrees.json", "system-prompts.json"] as const;
 const OPTIONAL_RUN_FILES = new Set(["result.json", "summary.json"]);
-const RUN_DIRECTORIES = new Set(["worktrees", ".system-prompts"]);
+const RUN_DIRECTORIES = new Set(["worktrees", ".system-prompts", "evidence"]);
 const RUN_FILES = new Set<string>([...REQUIRED_RUN_FILES, ...OPTIONAL_RUN_FILES]);
 // String-keyed views of the core vocabularies: persisted files are read as unknown, so membership is checked on plain strings.
 const AGENT_STATES = new Set<string>(CORE_AGENT_STATES);
@@ -185,6 +185,7 @@ async function validateRunArtifacts(store: RunStore, workflowScript: string, sta
   for (const name of REQUIRED_RUN_FILES) await requiredFile(join(store.directory, name));
   if (await readFile(join(store.directory, "workflow.js"), "utf8") !== workflowScript) throw new Error("Persisted workflow source does not match its launch snapshot");
   await validateSystemPrompts(store);
+  await store.validateEvidence();
   const result = await json(join(store.directory, "result.json")).catch((error: unknown) => { if (isNodeError(error, "ENOENT")) return undefined; throw error; });
   if (result === undefined && state === "completed") throw new Error("Completed run result is missing");
   if (result !== undefined && !jsonValue(result)) throw new Error("Persisted workflow result is invalid");
