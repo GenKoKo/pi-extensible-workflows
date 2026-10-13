@@ -558,6 +558,27 @@ void test("workflow scripts store evidence artifacts", async () => {
   assert.equal(stored.get(result.ref), "large test log payload");
 });
 
+void test("evidence rejects non-JSON input before the bridge and preserves valid JSON", async () => {
+  const calls: unknown[] = [];
+  const bridge = { evidence: async (content: string | JsonValue) => { calls.push(content); return { ref: "ref:sha256:1234567890abcdef", sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", path: "/tmp/evidence.txt", bytes: 1 }; } };
+  const invalid = [
+    "NaN", "Infinity", "-Infinity", "({ number: Infinity, missing: undefined })", "({ missing: undefined })", "[1, undefined]", "[, 1]",
+    "Promise.resolve('important')", "({ nested: [Promise.resolve(1)] })", "({ then() {} })", "({ nested: { then: () => 1 } })",
+    "() => 1", "({ fn() {} })", "10n", "({ big: 10n })", "(() => { const o = {}; o.self = o; return o; })()",
+    "({ toJSON() { return 'changed'; } })", "new (class Custom {})()", "Symbol('x')",
+  ];
+  for (const expression of invalid) {
+    await assert.rejects(runWorkflow(`return await evidence(${expression});`, null, bridge).result, (error: unknown) => error instanceof WorkflowError && error.code === "INVALID_METADATA" && /evidence/i.test(error.message), expression);
+  }
+  assert.deepEqual(calls, []);
+  const valid = ["'text \u2603'", "null", "true", "1.5", "[1, 'a', null, { b: [false] }]", "({ a: 1, nested: { b: 'c' } })"];
+  for (const expression of valid) await runWorkflow(`return await evidence(${expression});`, null, bridge).result;
+  assert.equal(calls.length, valid.length);
+  assert.deepEqual(calls[4], [1, "a", null, { b: [false] }]);
+  const all = await runWorkflow(`const [a, b] = await Promise.all([evidence("a"), evidence("b")]); return [a.ref, b.ref];`, null, bridge).result;
+  assert.deepEqual(all, ["ref:sha256:1234567890abcdef", "ref:sha256:1234567890abcdef"]);
+});
+
 void test("unawaited evidence results refuse serialization and interpolation with a typed error", async () => {
   const bridge = {
     evidence: async () => ({ ref: "ref:sha256:1234567890abcdef", sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", path: "/tmp/evidence.txt", bytes: 10 }),

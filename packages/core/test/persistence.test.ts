@@ -8,7 +8,7 @@ import test from "node:test";
 import { acquireSessionLease, createLaunchSnapshot, DEFAULT_SETTINGS, FairAgentScheduler, WorkflowError } from "../src/index.js";
 import { atomicWriteFile } from "../src/io.js";
 import { hasLiveSessionLease, listRunIds, projectStorageKey, RunStore, runsDirectory, structuralPath } from "../src/persistence.js";
-import { decodeTestJsonRecord, isTestRecord } from "./support.js";
+import { callUnchecked, decodeTestJsonRecord, isTestRecord } from "./support.js";
 
 const snapshot = createLaunchSnapshot({ script: "export const meta={name:'x',description:'x'}", args: { answer: 42 }, metadata: { name: "x", description: "x" }, settings: DEFAULT_SETTINGS, models: ["openai/gpt"], tools: ["read"], agentConfigurations: {}, schemas: [] });
 
@@ -945,6 +945,22 @@ void test("stores, dedupes, and lists evidence artifacts", async () => {
   // List evidence
   const list = await store.listEvidence();
   assert.equal(list.length, 2);
+});
+void test("evidence deduplication verifies raw bytes and rejects non-JSON content", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-evidence-bytes-"));
+  const cwd = join(home, "project");
+  const store = new RunStore(cwd, "session-a", "run-a", home);
+  await store.create(run(cwd), snapshot);
+  const record = await store.saveEvidence("\uFFFD");
+  assert.deepEqual([...readFileSync(record.path)], [0xef, 0xbf, 0xbd]);
+  assert.equal(record.bytes, 3);
+  writeFileSync(record.path, Buffer.from([0xff]));
+  await assert.rejects(store.saveEvidence("\uFFFD"), (error: unknown) => error instanceof WorkflowError && error.code === "RESULT_INVALID");
+  assert.deepEqual([...readFileSync(record.path)], [0xff]);
+  for (const bad of [undefined, Number.NaN, { value: Number.POSITIVE_INFINITY }, { value: undefined }, 1n, () => 1, Promise.resolve("x")]) {
+    await assert.rejects(callUnchecked(store.saveEvidence.bind(store), undefined, [bad]), (error: unknown) => error instanceof WorkflowError && error.code === "INVALID_METADATA");
+  }
+  assert.equal((await store.listEvidence()).length, 1);
 });
 void test("evidence deduplication rejects artifacts modified after saving", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-evidence-tamper-"));

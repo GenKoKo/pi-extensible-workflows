@@ -213,30 +213,30 @@ const plainPromptObject = value => {
   const proto = Object.getPrototypeOf(value);
   return proto === null || Object.getPrototypeOf(proto) === null && Object.prototype.hasOwnProperty.call(proto, "constructor") && typeof proto.constructor === "function" && Function.prototype.toString.call(proto.constructor) === Function.prototype.toString.call(Object);
 };
-const promptValue = (value, at, seen) => {
+const promptValue = (value, at, seen, kind = "Prompt value") => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
-  if (typeof value === "number") { if (!Number.isFinite(value)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" must be a finite number"); return; }
-  if (typeof value !== "object") throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" cannot be " + typeof value);
-  if (typeof value.then === "function") throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" is a Promise or thenable; await it before calling prompt()");
-  if (!Array.isArray(value) && !plainPromptObject(value)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" must be a plain object");
-  if (seen.has(value)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" contains a cycle");
+  if (typeof value === "number") { if (!Number.isFinite(value)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" must be a finite number"); return; }
+  if (typeof value !== "object") throw workError("INVALID_METADATA", kind + " \"" + at + "\" cannot be " + typeof value);
+  if (typeof value.then === "function") throw workError("INVALID_METADATA", kind + " \"" + at + "\" is a Promise or thenable; await it before " + (kind === "Prompt value" ? "calling prompt()" : "storing evidence"));
+  if (!Array.isArray(value) && !plainPromptObject(value)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" must be a plain object");
+  if (seen.has(value)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" contains a cycle");
   const keys = Reflect.ownKeys(value);
   const symbol = keys.find(key => typeof key === "symbol");
-  if (symbol) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" contains a symbol key");
+  if (symbol) throw workError("INVALID_METADATA", kind + " \"" + at + "\" contains a symbol key");
   seen.add(value);
   if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) promptProperty(value, String(index), at + "[" + index + "]", seen);
+    for (let index = 0; index < value.length; index += 1) promptProperty(value, String(index), at + "[" + index + "]", seen, kind);
     for (const key of keys) {
       const index = Number(key);
-      if (key !== "length" && !(Number.isInteger(index) && index >= 0 && index < value.length && String(index) === key)) promptProperty(value, key, promptPath(at, key), seen);
+      if (key !== "length" && !(Number.isInteger(index) && index >= 0 && index < value.length && String(index) === key)) promptProperty(value, key, promptPath(at, key), seen, kind);
     }
-  } else for (const key of keys) promptProperty(value, key, promptPath(at, key), seen);
+  } else for (const key of keys) promptProperty(value, key, promptPath(at, key), seen, kind);
   seen.delete(value);
 };
-const promptProperty = (value, key, at, seen) => {
+const promptProperty = (value, key, at, seen, kind = "Prompt value") => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  if (descriptor && (descriptor.get || descriptor.set)) throw workError("INVALID_METADATA", "Prompt value \"" + at + "\" cannot use getters or setters");
-  promptValue(descriptor && descriptor.value, at, seen);
+  if (descriptor && (descriptor.get || descriptor.set)) throw workError("INVALID_METADATA", kind + " \"" + at + "\" cannot use getters or setters");
+  promptValue(descriptor && descriptor.value, at, seen, kind);
 };
 const prompt = (template, values) => {
   if (typeof template !== "string") throw workError("INVALID_METADATA", "prompt() template must be a string");
@@ -358,6 +358,7 @@ const pipeline = async (operationName, items, stages) => {
 const guardedEvidenceResult = result => guardedResult(result, "evidence");
 const evidence = (...values) => {
   if (values.length !== 1 || values[0] === undefined) throw workError("INVALID_METADATA", "evidence requires one value argument");
+  promptValue(values[0], "evidence", new Set(), "Evidence value");
   return guardedEvidenceResult(rpc("evidence", [values[0]]));
 };
 const safeMath = Object.fromEntries(Object.getOwnPropertyNames(Math).filter(name => name !== "random").map(name => [name, Math[name]]));

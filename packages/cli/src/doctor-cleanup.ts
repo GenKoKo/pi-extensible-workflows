@@ -187,7 +187,7 @@ async function validateEvidence(store: RunStore): Promise<void> {
     if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Evidence artifact is not a regular file: ${join(dir, entry.name)}`);
     if (!/^[0-9a-f]{64}\.txt$/.test(entry.name)) throw new Error(`Evidence file name is invalid: ${join(dir, entry.name)}`);
     const sha = entry.name.slice(0, 64);
-    const content = await readFile(join(dir, entry.name), "utf8");
+    const content = await readFile(join(dir, entry.name));
     if (createHash("sha256").update(content).digest("hex") !== sha) throw new Error(`Evidence artifact content does not match checksum: ${join(dir, entry.name)}`);
   }
 }
