@@ -1,6 +1,10 @@
 # Changelog
 ## Unreleased
 
+### New capabilities
+
+- Registered functions can create persistent agent handles with `context.agent.create({ name, ... })` and `handle.send(...)`, with the same rules as scripts. Handle journal identity is scoped by function invocation, branch, worktree, and name. The bundled `reviewLoop` now uses one persistent developer and a fresh reviewer each iteration.
+
 ## [6.2.0] - 2026-10-10
 
 ### New capabilities

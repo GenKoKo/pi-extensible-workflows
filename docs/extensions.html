@@ -84,7 +84,7 @@
         <div class="table-wrap"><table>
           <thead><tr><th>Piece</th><th>Name</th><th>Default</th></tr></thead>
           <tbody>
-            <tr><td>Function</td><td><code>reviewLoop</code></td><td>Developer then reviewer until <code>pass</code> or <code>maxIterations</code> (default 5).</td></tr>
+            <tr><td>Function</td><td><code>reviewLoop</code></td><td>One persistent developer handle, then a fresh reviewer each iteration, until <code>pass</code> or <code>maxIterations</code> (default 5).</td></tr>
             <tr><td>Alias</td><td><code>developer-model</code>, <code>reviewer-model</code>, <code>scout-model</code>, <code>oracle-model</code>, <code>researcher-model</code></td><td>Resolve to the launching session model when settings do not define them.</td></tr>
           </tbody>
         </table></div>
@@ -174,6 +174,7 @@
             <tr><td><code>run</code></td><td>Read-only <code>WorkflowRunContext</code> for this launch.</td></tr>
             <tr><td><code>settings</code></td><td>Read-only effective workflow extension settings from global and trusted project settings.</td></tr>
             <tr><td><code>agent(prompt, options?)</code></td><td>Returns a bare JSON value. Core options are label, model, tools, excludeTools, skills, extensions, contextFiles, outputSchema, retries, and timeoutMs. Unknown JSON keys are forwarded to plugins; role has no core semantics. Thinking uses the model suffix.</td></tr>
+            <tr><td><code>agent.create(options)</code></td><td>Creates a persistent handle with a stable explicit <code>name</code> and the remaining options frozen for every turn. <code>handle.send(prompt, options?)</code> accepts only <code>outputSchema</code> and <code>timeoutMs</code>, continues the handle transcript, and returns the same bare value as <code>agent(...)</code>. Await each send: overlapping sends, sends from another <code>parallel</code>/<code>pipeline</code> branch, and sends from another <code>withWorktree</code> scope fail with <code>INVALID_METADATA</code>. The journal identity is scoped by the function invocation (including repeated and nested calls), branch, worktree, and name, so one name is reusable across functions and invocations but not twice in one scope. Names starting with <code>function-handle/</code> are reserved. Each turn is its own agent node; handles are not grouped automatically.</td></tr>
             <tr><td><code>shell(command, options?)</code></td><td>Runs a host command and returns <code>{ exitCode, stdout, stderr }</code>. Options are <code>timeoutMs</code> and string-valued <code>env</code>.</td></tr>
             <tr><td><code>prompt(template, values)</code></td><td>Interpolates a plain object of JSON values into a prompt. Await agent results before passing them here.</td></tr>
             <tr><td><code>parallel(name, tasks)</code></td><td>Runs stable keyed tasks concurrently and returns an object of bare values.</td></tr>

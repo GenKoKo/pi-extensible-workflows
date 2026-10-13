@@ -41,6 +41,8 @@ function isRpcMessage(value: unknown): value is RpcMessage {
 const HEARTBEAT_INTERVAL_MS = 1000;
 
 const OUTCOME_ERRORS = new Set<string>(["AGENT_TIMEOUT", "AGENT_FAILED", "RESULT_INVALID"]);
+/** Script handle names may not start with this: registered-function handles are journaled under it. */
+export const FUNCTION_HANDLE_PREFIX = "function-handle";
 const WORK_RESULT_BRAND = "__workResult";
 
 const childSource = String.raw`
@@ -158,6 +160,7 @@ const internalAgentCreate = (...values) => {
   if (values.length !== 1 || !values[0] || typeof values[0] !== "object" || Array.isArray(values[0])) throw workError("INVALID_METADATA", "agent.create requires one options object");
   const options = values[0];
   const name = named(options.name, "agent.create");
+  if (name.startsWith("${FUNCTION_HANDLE_PREFIX}/")) throw workError("INVALID_METADATA", "Agent handle names may not start with ${FUNCTION_HANDLE_PREFIX}/");
   if (agentHandleNames.has(name)) throw workError("INVALID_METADATA", "Duplicate agent handle name: " + name);
   agentHandleNames.add(name);
   const config = Object.freeze(Object.fromEntries(Object.entries(options).filter(([key]) => key !== "name")));

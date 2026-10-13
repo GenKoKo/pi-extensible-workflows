@@ -145,6 +145,8 @@ const results = await parallel("implementation", {
 });
 ```
 
+Registered extension functions also get `context.agent.create({ name, ... })` with the same handle rules as scripts. Handle journal identity is scoped by function invocation, branch, worktree, and name, so repeated or nested invocations and script handles never share a transcript; the prefix `function-handle/` is reserved in script names. Each turn is a separate agent node, with no automatic grouping.
+
 Registered extension functions receive `withWorktree` in context and can compose other registered functions with `context.invoke("reviewRepository", { focus: "security" }, "security-review")`. The optional label is presentation-only; journal identity remains the function name and occurrence. Their public inputs and outputs remain JSON; callbacks cannot cross the extension boundary.
 
 ## Rules
