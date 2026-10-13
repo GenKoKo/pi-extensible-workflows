@@ -63,6 +63,7 @@ async function scanRun(cwd: string, sessionId: string, runId: string, home: stri
   const store = new RunStore(cwd, sessionId, runId, home);
   const loaded = await store.load();
   await validateInventory(store, loaded);
+  await store.validateEvidence();
   await store.loadSummary();
   await store.loadOwnership();
   await store.systemPrompts();
