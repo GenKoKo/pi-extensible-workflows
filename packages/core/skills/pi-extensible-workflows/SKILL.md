@@ -125,7 +125,9 @@ return { findings, fix };
 
 ## Worktrees
 
-Use `withWorktree(name, callback)` for top-level agents that collaborate in one explicitly named worktree scope:
+Use `withWorktree(name, callback)` for agents that collaborate in one explicitly named worktree scope:
+
+Registered functions inherit the active worktree scope, including nested calls, agents, and `shell()`.
 
 ```js
 const result = await withWorktree("issue", async ({ path, branch }) => {
