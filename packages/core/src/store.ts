@@ -21,6 +21,9 @@ const SYSTEM_PROMPT_RECORDS = "records";
 const SYSTEM_PROMPT_BODIES = "bodies";
 const SYSTEM_PROMPT_SEQUENCE = "sequence";
 const SYSTEM_PROMPT_ARTIFACT = { version: 2 as const, format: "append-only" as const, storage: SYSTEM_PROMPT_STORAGE };
+function assertEvidenceIntegrity(content: string, sha256: string, path: string): void {
+  if (createHash("sha256").update(content).digest("hex") !== sha256) throw new WorkflowError("RESULT_INVALID", `Evidence artifact content does not match its checksum: ${path}`);
+}
 function summaryArtifacts(directory: string): RunSummaryArtifacts { return { runDirectory: directory, statePath: join(directory, "state.json"), journalPath: join(directory, "journal.json"), snapshotPath: join(directory, "snapshot.json"), workflowPath: join(directory, "workflow.js"), resultPath: join(directory, "result.json"), summaryPath: join(directory, "summary.json"), evidenceDirectory: join(directory, "evidence") }; }
 function summaryFromRun(run: PersistedRun, directory: string, journal: Journal, previous: Partial<RunSummary> | undefined, fallbackCreatedAt: string, now = new Date().toISOString()): RunSummary {
   const createdAt = typeof previous?.createdAt === "string" ? previous.createdAt : fallbackCreatedAt;
@@ -811,22 +814,10 @@ export class RunStore {
     const dir = this.evidenceDirectory();
     const targetPath = join(dir, `${sha256}.txt`);
     await mkdir(dir, { recursive: true, mode: 0o700 });
-    try {
-      await access(targetPath);
-    } catch {
-      await atomicWriteFile(targetPath, raw);
-    }
+    const existing = await readFile(targetPath, "utf8").catch((error: unknown) => { if (isNodeError(error, "ENOENT")) return undefined; throw error; });
+    if (existing === undefined) await atomicWriteFile(targetPath, raw);
+    else assertEvidenceIntegrity(existing, sha256, targetPath);
     return { ref, sha256, path: targetPath, bytes: Buffer.byteLength(raw, "utf8") };
-  }
-
-  async readEvidence(ref: string): Promise<string> {
-    const dir = this.evidenceDirectory();
-    let sha = ref.trim();
-    if (sha.startsWith("ref:sha256:")) sha = sha.slice("ref:sha256:".length);
-    const names = await readdir(dir).catch(() => [] as string[]);
-    const match = names.find((name) => name === `${sha}.txt` || (sha.length >= 8 && name.startsWith(sha) && name.endsWith(".txt")));
-    if (!match) throw new WorkflowError("RESULT_INVALID", `Evidence reference not found: ${ref}`);
-    return await readFile(join(dir, match), "utf8");
   }
 
   async listEvidence(): Promise<readonly EvidenceRecord[]> {

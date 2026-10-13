@@ -915,7 +915,7 @@ void test("authoritative state writes survive summary projection failures", asyn
   if (!isTestRecord(journal.completed)) throw new Error("Persisted journal completed entries were malformed");
   assert.deepEqual(journal.completed["agent/one"], { path: "agent/one", value: "done" });
 });
-void test("stores, dedupes, lists, and reads evidence artifacts by reference", async () => {
+void test("stores, dedupes, and lists evidence artifacts", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-evidence-"));
   const cwd = join(home, "project");
   const store = new RunStore(cwd, "session-a", "run-a", home);
@@ -938,20 +938,22 @@ void test("stores, dedupes, lists, and reads evidence artifacts by reference", a
   const recordJson = await store.saveEvidence(jsonPayload);
   assert.match(recordJson.ref, /^ref:sha256:[0-9a-f]{16}$/);
 
-  // Read back by full ref
-  assert.equal(await store.readEvidence(record1.ref), textPayload);
-
-  // Read back by sha256
-  assert.equal(await store.readEvidence(record1.sha256), textPayload);
-
-  // Read back JSON
-  const readJson = await store.readEvidence(recordJson.ref);
-  assert.deepEqual(JSON.parse(readJson), jsonPayload);
+  // Stored content reads back through the artifact path
+  assert.equal(readFileSync(record1.path, "utf8"), textPayload);
+  assert.deepEqual(JSON.parse(readFileSync(recordJson.path, "utf8")), jsonPayload);
 
   // List evidence
   const list = await store.listEvidence();
   assert.equal(list.length, 2);
-
-  // Missing evidence throws RESULT_INVALID
-  await assert.rejects(store.readEvidence("ref:sha256:0000000000000000"), (error: unknown) => error instanceof WorkflowError && error.code === "RESULT_INVALID");
+});
+void test("evidence deduplication rejects artifacts modified after saving", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-evidence-tamper-"));
+  const cwd = join(home, "project");
+  const store = new RunStore(cwd, "session-a", "run-a", home);
+  await store.create(run(cwd), snapshot);
+  const record = await store.saveEvidence("original");
+  writeFileSync(record.path, "tampered");
+  const rejected = (error: unknown): boolean => error instanceof WorkflowError && error.code === "RESULT_INVALID";
+  await assert.rejects(store.saveEvidence("original"), rejected);
+  assert.equal(readFileSync(record.path, "utf8"), "tampered");
 });

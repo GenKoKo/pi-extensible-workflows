@@ -40,7 +40,7 @@ Workflow JavaScript has no imports, filesystem, network, process, or timers. Del
 
 `await tools.<name>(args)` calls a tool of the launching Pi session directly, without an agent, with the same names and results as Pi `codemode`: an object when the tool declares an output schema, otherwise its text; other failures reject with `TOOL_FAILED`. Do not probe with `"name" in tools`; the launch checks the names a script calls. Prefer it over an agent for mechanical reads and tool calls. Workflow and subagent tools are not callable, and calls inside `withWorktree` fail.
 
-`await evidence(content)` stores large text or JSON payloads (such as voluminous test logs, diffs, or compiler traces) into run-scoped content-addressable storage (`evidence/<sha256>.txt`) and returns a compact `{ ref, sha256, path, bytes }` record (where `ref` is `ref:sha256:<prefix>`). Pass this compact reference into downstream prompts to prevent context pollution in synthesizing agents. `await evidence.read(ref)` reads the stored content back when needed.
+`await evidence(content)` explicitly stores text or JSON and returns `{ ref, sha256, path, bytes }`.
 
 Example use of `shell`:
 

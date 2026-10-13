@@ -538,7 +538,7 @@ void test("unawaited agent, shell, and function results refuse serialization and
   assert.equal(await runWorkflow(`const [a, s, f] = await Promise.all([agent("a"), shell("true"), helper({})]); return JSON.stringify([a, s.exitCode, f]);`, null, bridge).result, JSON.stringify(["agent-value", 0, "function-value"]));
 });
 
-void test("workflow scripts store and read evidence artifacts", async () => {
+void test("workflow scripts store evidence artifacts", async () => {
   const stored = new Map<string, string>();
   const bridge = {
     evidence: async (content: string | JsonValue) => {
@@ -547,23 +547,15 @@ void test("workflow scripts store and read evidence artifacts", async () => {
       stored.set(ref, raw);
       return { ref, sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", path: "/tmp/evidence.txt", bytes: raw.length };
     },
-    evidenceRead: async (ref: string) => {
-      const found = stored.get(ref);
-      if (!found) throw new WorkflowError("RESULT_INVALID", "Not found");
-      return found;
-    },
   };
 
   const script = `
     const rec = await evidence("large test log payload");
-    const readBack = await evidence.read(rec.ref);
-    const readByRecord = await evidence.read(rec);
-    return { rec, readBack, readByRecord };
+    return rec;
   `;
-  const result = await runWorkflow(script, null, bridge).result as { rec: { ref: string }; readBack: string; readByRecord: string };
-  assert.equal(result.rec.ref, "ref:sha256:1234567890abcdef");
-  assert.equal(result.readBack, "large test log payload");
-  assert.equal(result.readByRecord, "large test log payload");
+  const result = await runWorkflow(script, null, bridge).result as { ref: string };
+  assert.equal(result.ref, "ref:sha256:1234567890abcdef");
+  assert.equal(stored.get(result.ref), "large test log payload");
 });
 
 void test("unawaited evidence results refuse serialization and interpolation with a typed error", async () => {
