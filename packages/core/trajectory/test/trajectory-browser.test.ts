@@ -154,8 +154,8 @@ async function withChrome(url: string, signal: AbortSignal, callback: (page: Dev
   }
 }
 
-function makeState(output: Record<string, unknown>, state: "running" | "completed"): Record<string, unknown> {
-  const agent = { id: "agent", name: "fixture-agent", label: "fixture-agent", state, attempts: 1, startedAt: 1, durationMs: state === "completed" ? 10 : undefined, model: { provider: "fixture", model: "model" }, requestedModel: "fixture/request", tools: ["read"], skills: ["review"], extensions: ["fixture"], prompt: "Inspect the fixture", systemPrompt: "System prompt", output, attemptDetails: [{ attempt: 1, transport: "local", setup: { cwd: "/project", model: { provider: "fixture", model: "model" }, tools: ["read"] } }] };
+function makeState(output: Record<string, unknown>, state: "running" | "completed", systemPrompt = "System prompt"): Record<string, unknown> {
+  const agent = { id: "agent", name: "fixture-agent", label: "fixture-agent", state, attempts: 1, startedAt: 1, durationMs: state === "completed" ? 10 : undefined, model: { provider: "fixture", model: "model" }, requestedModel: "fixture/request", tools: ["read"], skills: ["review"], extensions: ["fixture"], prompt: "Inspect the fixture", systemPrompt, output, attemptDetails: [{ attempt: 1, transport: "local", setup: { cwd: "/project", model: { provider: "fixture", model: "model" }, tools: ["read"] } }] };
   const run = { id: "run", workflowName: "fixture", cwd: "/project", sessionId: "session", state, agents: [agent], transcripts: { agent: [{ type: "message", timestamp: "2025-01-01T00:00:00.000Z", message: { role: "assistant", content: [{ type: "text", text: "transcript" }] } }] }, snapshot: { script: "return true;" } };
   return { type: "state", publishers: [{ id: "publisher", title: "fixture", cwd: "/project", sessionId: "session", connected: true, runs: [{ run }], subagents: [] }], updatedAt: 1 };
 }
@@ -193,6 +193,32 @@ void test("Trajectory static export opens Agent details and its Output tab in Ch
       });
     } finally { await server.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+void test("Trajectory Chromium prompt panes display full system prompts as safe plain text", { skip: !browserPath, timeout: 120_000 }, async (t) => {
+  const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
+  const prompt = ['Introduction & "quoted"', ...["tools", "rules", "docs", "addendum", "project_context", "skills", "cwd"].map((tag) => `<${tag}>\n${tag === "addendum" ? "# Developer Role\n\nFollow developer instructions." : `Contents of ${tag}`}\n</${tag}>`), '<script>window.__promptExecuted = true</script>\n<img src=x onerror="window.__promptExecuted = true">'].join("\n");
+  const fixture = JSON.stringify(makeState({ status: "pending" }, "running", prompt)).replace(/</g, "\\u003c");
+  const html = source.replace("  <script>\n    const defaultRunLayout", `  <script>window.__PIEWF_STATIC__ = ${fixture};</script>\n  <script>\n    const defaultRunLayout`);
+  assert.notEqual(html, source);
+  const server = await serve(new Map<string, RouteBody>([["/index.html", html], ["/marked.min.js", readFileSync(new URL("../src/assets/marked.min.js", import.meta.url))], ["/morphdom.min.js", readFileSync(new URL("../src/assets/morphdom.min.js", import.meta.url))]]));
+  try {
+    await withChrome(`${server.url}/index.html`, t.signal, async (page) => {
+      await waitFor(page, "Boolean(document.querySelector('.agent-grid-row'))");
+      await page.evaluate(clickExpression(".agent-grid-row"));
+      const assertPrompt = async (): Promise<void> => {
+        assert.equal(await page.evaluate("document.querySelector('#sys-pane .code').textContent"), prompt);
+        assert.equal(await page.evaluate("getComputedStyle(document.querySelector('#sys-pane .code')).whiteSpace"), "pre-wrap");
+        assert.equal(await page.evaluate("document.querySelectorAll('#sys-pane script, #sys-pane img, #sys-pane addendum').length"), 0);
+        assert.equal(await page.evaluate("Boolean(window.__promptExecuted)"), false);
+      };
+      await page.evaluate(clickExpression('[data-event="0"]'));
+      await assertPrompt();
+      await page.evaluate(clickExpression("[data-agent-details]"));
+      assert.equal(await page.evaluate("document.querySelector('#sys-tabs [data-pane=prompt]').classList.contains('on')"), true);
+      await assertPrompt();
+    });
+  } finally { await server.close(); }
 });
 
 void test("Trajectory Chromium view preserves the selected Output tab across live publisher updates", { skip: !browserPath, timeout: 120_000 }, async (t) => {

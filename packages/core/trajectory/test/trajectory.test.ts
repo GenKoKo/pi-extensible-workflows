@@ -571,13 +571,51 @@ function loadTrajectoryMarkdownHelpers(source: string): TrajectoryMarkdownHelper
   return runInNewContext(`(() => { ${source.slice(helperStart, helperEnd)}; return { sanitizeMarkdown }; })()`, { DOMParser: FakeDOMParser }) as TrajectoryMarkdownHelpers;
 }
 
-void test("Trajectory sanitizes markdown before rendering transcript and system prompt content", () => {
+void test("Trajectory sanitizes markdown before rendering assistant transcript content", () => {
   const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
   const helpers = loadTrajectoryMarkdownHelpers(source);
   const markdown = '<p onclick="alert(1)"><strong>Normal</strong><a href="https://example.com">link</a></p><pre><code class="language-js">code</code></pre><script>alert(1)</script><a href="javascript:alert(1)">blocked</a><a href="java&#9;script:alert(1)">tab</a><img src="data:text/html,alert(1)" alt="image"><ul><li>done <input checked="" disabled="" type="checkbox"></li></ul>';
   assert.equal(helpers.sanitizeMarkdown(markdown), '<p><strong>Normal</strong><a href="https://example.com">link</a></p><pre><code class="language-js">code</code></pre><a>blocked</a><a>tab</a><img alt="image"><ul><li>done <input checked="" disabled="" type="checkbox"></li></ul>');
-  assert.match(source, /sanitizeMarkdown\(marked\.parse\(prompt, \{ mangle: false, headerIds: false \}\)\)/);
+  assert.doesNotMatch(source, /marked\.parse\(prompt/);
   assert.match(source, /sanitizeMarkdown\(marked\.parse\(body\)\)/);
+});
+
+
+void test("Trajectory prompt panes preserve complete escaped system prompts and fallbacks", () => {
+  const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
+  const helperStart = source.indexOf("    const esc");
+  const helperEnd = source.indexOf("    function renderAssistantToolCalls", helperStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  const pane = { innerHTML: "" };
+  const tabs = { querySelectorAll: () => [] };
+  const helpers = runInNewContext(`(() => { const state = { sysPane: "prompt" }; const $ = (id) => id === "sys-pane" ? pane : tabs; const patch = (root, html) => { root.innerHTML = html; }; ${source.slice(helperStart, helperEnd)}; return { renderSystemPane, renderSystemPromptPane }; })()`, { pane, tabs }) as {
+    renderSystemPane: (agent: Record<string, unknown>) => void;
+    renderSystemPromptPane: (agent: Record<string, unknown>, entry?: Record<string, unknown>) => void;
+  };
+  const prompt = ['Introduction & "quoted"', ...["tools", "rules", "docs", "addendum", "project_context", "skills", "cwd"].map((tag) => `<${tag}>\n${tag === "addendum" ? "# Developer Role\n\nFollow developer instructions." : `Contents of ${tag}`}\n</${tag}>`), '<script>alert("unsafe")</script>\n<img src=x onerror="alert(1)">'].join("\n");
+  const escaped = prompt.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const assertPrompt = (): void => {
+    assert.ok(pane.innerHTML.endsWith(`<div class="code">${escaped}</div>`));
+    assert.match(pane.innerHTML, /&lt;addendum&gt;\n# Developer Role\n\nFollow developer instructions\.\n&lt;\/addendum&gt;/);
+    assert.doesNotMatch(pane.innerHTML, /<script|<img|<addendum/);
+  };
+  helpers.renderSystemPane({ systemPrompt: prompt, prompt: "Wrong fallback" });
+  assertPrompt();
+  helpers.renderSystemPane({ prompt });
+  assertPrompt();
+  helpers.renderSystemPromptPane({ systemPrompt: "Wrong fallback" }, { prompt });
+  assertPrompt();
+  helpers.renderSystemPromptPane({ systemPrompt: prompt });
+  assertPrompt();
+  helpers.renderSystemPane({});
+  assert.match(pane.innerHTML, /Prompt unavailable/);
+  helpers.renderSystemPromptPane({});
+  assert.match(pane.innerHTML, /System prompt unavailable/);
+  helpers.renderSystemPane({ systemPrompt: "", prompt: "Wrong fallback" });
+  assert.ok(pane.innerHTML.endsWith('<div class="code"></div>'));
+  helpers.renderSystemPromptPane({ systemPrompt: "Wrong fallback" }, { prompt: "" });
+  assert.ok(pane.innerHTML.endsWith('<div class="code"></div>'));
+  assert.match(source, /\.code \{[^}]*white-space: pre-wrap/);
 });
 
 
