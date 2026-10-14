@@ -1450,7 +1450,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
       }
       if (runDetails?.run) {
         const incoming = runDetails.run;
-        if (HARD_TERMINAL_RUN_STATES.has(incoming.state)) state.workflowProgressFrozenAt ??= Date.now();
+        if (!isPartial || HARD_TERMINAL_RUN_STATES.has(incoming.state)) state.workflowProgressFrozenAt ??= Date.now();
         else if (incoming.state === "running") delete state.workflowProgressFrozenAt;
         let progress = state.workflowProgress;
         if (!isPartial || !progress || progress.runId !== incoming.id) {
