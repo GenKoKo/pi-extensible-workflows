@@ -1,7 +1,18 @@
 # Changelog
 ## Unreleased
 
+## [6.2.2] - 2026-10-18
+
 ### Fixes
+
+- Workflow evidence uses an explicit `evidence(content)` API with JSON validation, checksum verification, pause/cancellation lifecycle gates, and replay-safe records across retries. Cleanup and retention validate artifacts while avoiding repeated hashing of unchanged files.
+- Final workflow tool results are frozen to prevent later mutation.
+
+### Documentation
+
+- Clarified that registered functions inherit the active worktree scope, including nested calls, agents, and shell commands.
+
+### Trajectory fixes
 
 - The Trajectory server assembles large WebSocket frames in a reusable buffer instead of recopying the partial frame on every TCP chunk, and a slow browser keeps only the newest state until its socket drains instead of serializing every replaced snapshot. A 16 MiB publisher frame now costs about one copy instead of about 130.
 - A running workflow no longer republishes its whole Trajectory state every poll just because its live duration advanced. While running, Trajectory carries the persisted duration and the browser keeps deriving runtime from the clock, rescaling the gantt as the timeline grows. Real changes (state, usage, agents, and persisted updates) still publish on the next poll, and finished runs show their exact duration.
