@@ -14,7 +14,7 @@ const TRAJECTORY_IDLE_EXIT_MS = 5 * 60 * 1000;
 type Socket = import("node:stream").Duplex;
 type ClientKind = "publisher" | "browser";
 type RunFocus = { publisherId: string; runId: string };
-type Client = { socket: Socket; kind: ClientKind; publisherId?: string; buffer: Buffer; pendingState: Buffer | undefined; pendingDeliver: (() => void) | undefined; backpressured: boolean; superseded: boolean; focusAware?: boolean; focus?: RunFocus; sentTiming?: Map<string, number> };
+type Client = { socket: Socket; kind: ClientKind; publisherId?: string; buffer: Buffer; buffered: number; pendingState: State | undefined; backpressured: boolean; superseded: boolean; focusAware?: boolean; focus?: RunFocus; sentTiming?: Map<string, number> };
 type State = { type: "state"; publishers: readonly unknown[]; updatedAt: number; initial?: boolean; truncated?: boolean };
 type PendingRequest = { requestId: string; kind: "transcript" | "action"; browser: Client; publisherId: string; publisher: Client; target: { runId?: string; agentId?: string; subagentId?: string; revision?: number }; timer: ReturnType<typeof setTimeout> };
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
@@ -186,52 +186,60 @@ function isState(value: unknown): value is State {
   return Boolean(value && typeof value === "object" && !Array.isArray(value) && (value as { type?: unknown }).type === "state");
 }
 
-function writeFrame(client: Client, packet: Buffer, state: boolean, onDelivered?: () => void): void {
-  // A superseded pending frame is never sent, so its payload must not count as delivered.
-  if (state && client.backpressured) { client.pendingState = packet; client.pendingDeliver = onDelivered; return; }
+function writeFrame(client: Client, packet: Buffer, onDelivered?: () => void): void {
   try {
-    if (state) { client.pendingState = undefined; client.pendingDeliver = undefined; }
     if (!client.socket.write(packet)) client.backpressured = true;
     onDelivered?.();
   } catch { client.socket.destroy(); }
 }
 
 function send(client: Client, value: unknown, maxBytes: number): void {
-  try {
-    const state = isState(value);
-    const packet = frame(state ? encodeState(value, maxBytes) : encodeApplication(value, maxBytes), maxBytes);
-    writeFrame(client, packet, state);
-  } catch { client.socket.destroy(); }
+  try { writeFrame(client, frame(encodeApplication(value, maxBytes), maxBytes)); } catch { client.socket.destroy(); }
+}
+
+/** Grows the receive buffer geometrically, so assembling a frame from many chunks copies each byte a bounded number of times. */
+function reserve(client: Client, bytes: number, maxBytes: number): void {
+  if (bytes <= client.buffer.length) return;
+  const grown = Buffer.allocUnsafe(Math.min(maxBytes + 14, Math.max(bytes, client.buffer.length * 2)));
+  client.buffer.copy(grown, 0, 0, client.buffered);
+  client.buffer = grown;
 }
 
 function parseFrames(client: Client, chunk: Buffer, maxBytes: number): readonly string[] {
-  client.buffer = Buffer.concat([client.buffer, chunk]);
-  if (client.buffer.length > maxBytes + 14) throw new Error("Trajectory WebSocket buffer is too large");
+  if (client.buffered + chunk.length > maxBytes + 14) throw new Error("Trajectory WebSocket buffer is too large");
+  reserve(client, client.buffered + chunk.length, maxBytes);
+  client.buffered += chunk.copy(client.buffer, client.buffered);
   const messages: string[] = [];
-  while (client.buffer.length >= 2) {
-    const first = client.buffer[0] ?? 0;
-    const second = client.buffer[1] ?? 0;
+  let start = 0;
+  let needed = 2;
+  while (client.buffered - start >= 2) {
+    const buffer = client.buffer.subarray(start, client.buffered);
+    const first = buffer[0] ?? 0;
+    const second = buffer[1] ?? 0;
     const opcode = first & 0x0f;
     const masked = (second & 0x80) !== 0;
     if ((first & 0x70) !== 0 || (first & 0x80) === 0 || !masked) throw new Error("Invalid Trajectory WebSocket frame");
     let offset = 2;
     let length = second & 0x7f;
-    if (length === 126) { if (client.buffer.length < 4) break; length = client.buffer.readUInt16BE(2); offset = 4; }
-    else if (length === 127) { if (client.buffer.length < 10) break; const longLength = client.buffer.readBigUInt64BE(2); if (longLength > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Trajectory WebSocket frame is too large"); length = Number(longLength); offset = 10; }
+    if (length === 126) { if (buffer.length < 4) { needed = 4; break; } length = buffer.readUInt16BE(2); offset = 4; }
+    else if (length === 127) { if (buffer.length < 10) { needed = 10; break; } const longLength = buffer.readBigUInt64BE(2); if (longLength > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Trajectory WebSocket frame is too large"); length = Number(longLength); offset = 10; }
     if (length >= maxBytes) throw new Error("Trajectory WebSocket frame is too large");
     if (opcode >= 0x8 && (length > 125 || (first & 0x80) === 0)) throw new Error("Invalid Trajectory WebSocket control frame");
-    if (client.buffer.length < offset + 4 + length) break;
-    const mask = client.buffer.subarray(offset, offset + 4); offset += 4;
-    const data = client.buffer.subarray(offset, offset + length);
-    client.buffer = client.buffer.subarray(offset + length);
+    if (buffer.length < offset + 4 + length) { needed = offset + 4 + length; break; }
+    const mask = buffer.subarray(offset, offset + 4); offset += 4;
+    const data = buffer.subarray(offset, offset + length);
+    start += offset + length;
     if (opcode === 0x8) { client.socket.end(); break; }
-    if (opcode === 0x9) { const pong = Buffer.alloc(2 + length); pong[0] = 0x8a; pong[1] = length; for (let index = 0; index < length; index += 1) pong[index + 2] = (data[index] ?? 0) ^ (mask[index % 4] ?? 0); writeFrame(client, pong, false); continue; }
+    if (opcode === 0x9) { const pong = Buffer.alloc(2 + length); pong[0] = 0x8a; pong[1] = length; for (let index = 0; index < length; index += 1) pong[index + 2] = (data[index] ?? 0) ^ (mask[index % 4] ?? 0); writeFrame(client, pong); continue; }
     if (opcode === 0xA) continue;
     if (opcode !== 0x1) throw new Error("Unsupported Trajectory WebSocket frame");
     const decoded = Buffer.alloc(length);
     for (let index = 0; index < length; index += 1) decoded[index] = (data[index] ?? 0) ^ (mask[index % 4] ?? 0);
     messages.push(decoded.toString("utf8"));
   }
+  // Only the unfinished frame moves to the front, and the buffer is sized for it once its header is known.
+  if (start > 0) { client.buffer.copy(client.buffer, 0, start, client.buffered); client.buffered -= start; }
+  reserve(client, needed, maxBytes);
   return messages;
 }
 
@@ -301,22 +309,21 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
   const cancelIdleExit = () => {
     if (idleTimer !== undefined) { clearTimeout(idleTimer); idleTimer = undefined; }
   };
+  // A backpressured browser keeps only the newest state and encodes it on drain, so replaced snapshots are never serialized.
+  // Timing counts as delivered only for the state actually written, encoded with the focus current at that moment.
+  const deliverState = (client: Client, state: State, shared?: () => Buffer): void => {
+    if (client.backpressured) { client.pendingState = state; return; }
+    if (client.focusAware !== true) { writeFrame(client, shared?.() ?? frame(encodeState(state, maxFrameBytes), maxFrameBytes)); return; }
+    const sent = (client.sentTiming ??= new Map<string, number>());
+    const marks: [string, number][] = [];
+    const stateFrame = frame(encodeState(focusedState(state, client.focus, sent, (key, revision) => marks.push([key, revision])), maxFrameBytes), maxFrameBytes);
+    writeFrame(client, stateFrame, () => { for (const [key, revision] of marks) sent.set(key, revision); });
+  };
   const broadcast = (value: unknown) => {
     if (isState(value)) {
       try {
         let shared: Buffer | undefined;
-        for (const client of clients) {
-          if (client.kind !== "browser") continue;
-          if (client.focusAware !== true) {
-            shared ??= frame(encodeState(value, maxFrameBytes), maxFrameBytes);
-            writeFrame(client, shared, true);
-            continue;
-          }
-          const sent = (client.sentTiming ??= new Map<string, number>());
-          const marks: [string, number][] = [];
-          const stateFrame = frame(encodeState(focusedState(value, client.focus, sent, (key, revision) => marks.push([key, revision])), maxFrameBytes), maxFrameBytes);
-          writeFrame(client, stateFrame, true, () => { for (const [key, revision] of marks) sent.set(key, revision); });
-        }
+        for (const client of clients) if (client.kind === "browser") deliverState(client, value, () => shared ??= frame(encodeState(value, maxFrameBytes), maxFrameBytes));
       } catch {
         for (const client of clients) if (client.kind === "browser") client.socket.destroy();
       }
@@ -354,7 +361,7 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
     const message = value as Record<string, unknown>;
     if (client.superseded) return;
     if (message.type === "publisher:detach" && client.kind === "publisher" && client.publisherId && publishers.get(client.publisherId)?.client === client) { clearPending(client, "Publisher is disconnected"); publishers.delete(client.publisherId); publishState(); scheduleIdleExit(); return; }
-    if (message.type === "ui:attach") { client.kind = "browser"; emit(client, latest); notifyViewers(); return; }
+    if (message.type === "ui:attach") { client.kind = "browser"; try { deliverState(client, latest); } catch { client.socket.destroy(); } notifyViewers(); return; }
     if (message.type === "ui:focus" && client.kind === "browser") {
       const publisherId = typeof message.publisherId === "string" ? message.publisherId : undefined;
       const runId = typeof message.runId === "string" ? message.runId : undefined;
@@ -362,11 +369,7 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
       client.sentTiming = new Map<string, number>();
       if (publisherId !== undefined && runId !== undefined) client.focus = { publisherId, runId };
       else delete client.focus;
-      const sent = client.sentTiming;
-      const marks: [string, number][] = [];
-      const focused = focusedState(latest, client.focus, sent, (key, revision) => marks.push([key, revision]));
-      try { writeFrame(client, frame(encodeState(focused, maxFrameBytes), maxFrameBytes), true, () => { for (const [key, revision] of marks) sent.set(key, revision); }); }
-      catch { client.socket.destroy(); }
+      try { deliverState(client, latest); } catch { client.socket.destroy(); }
       return;
     }
     if (client.kind === "publisher" && message.type === "publisher:attach" && typeof message.publisherId === "string") {
@@ -526,14 +529,12 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
     if (!authorized(request, port) || url.pathname !== "/ws" || typeof key !== "string") { socket.destroy(); return; }
     const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-    const client: Client = { socket, kind: "publisher", buffer: Buffer.alloc(0), pendingState: undefined, pendingDeliver: undefined, backpressured: false, superseded: false };
+    const client: Client = { socket, kind: "publisher", buffer: Buffer.alloc(0), buffered: 0, pendingState: undefined, backpressured: false, superseded: false };
     socket.on("drain", () => {
       const pendingState = client.pendingState;
-      const pendingDeliver = client.pendingDeliver;
       client.pendingState = undefined;
-      client.pendingDeliver = undefined;
       client.backpressured = false;
-      if (pendingState !== undefined) writeFrame(client, pendingState, true, pendingDeliver);
+      if (pendingState !== undefined) { try { deliverState(client, pendingState); } catch { socket.destroy(); } }
     });
     clients.add(client);
     socket.on("data", (chunk: unknown) => {

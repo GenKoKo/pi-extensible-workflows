@@ -1,6 +1,10 @@
 # Changelog
 ## Unreleased
 
+### Fixes
+
+- The Trajectory server assembles large WebSocket frames in a reusable buffer instead of recopying the partial frame on every TCP chunk, and a slow browser keeps only the newest state until its socket drains instead of serializing every replaced snapshot. A 16 MiB publisher frame now costs about one copy instead of about 130.
+
 ## [6.2.1] - 2026-10-13
 
 ### New capabilities
