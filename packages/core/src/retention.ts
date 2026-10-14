@@ -8,6 +8,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const REQUIRED_FILES = new Set(["workflow.js", "state.json", "snapshot.json", "journal.json", "ownership.json", "worktrees.json", "borrowed-worktrees.json", "system-prompts.json"]);
 const OPTIONAL_FILES = new Set(["result.json", "summary.json"]);
 const REQUIRED_DIRECTORIES = new Set(["worktrees", ".system-prompts"]);
+const OPTIONAL_DIRECTORIES = new Set(["evidence"]);
 
 type StoredRun = { sessionId: string; runId: string; store: RunStore; run: PersistedRun; stateMtimeMs: number; dependencies: readonly string[] };
 
@@ -28,7 +29,7 @@ export interface RetentionCleanupReport {
 async function validateInventory(store: RunStore, loaded: { run: PersistedRun; snapshot: Readonly<LaunchSnapshot> }): Promise<void> {
   const entries = await readdir(store.directory, { withFileTypes: true });
   for (const entry of entries) {
-    if (REQUIRED_DIRECTORIES.has(entry.name)) {
+    if (REQUIRED_DIRECTORIES.has(entry.name) || OPTIONAL_DIRECTORIES.has(entry.name)) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Run artifact is not a regular directory: ${join(store.directory, entry.name)}`);
       continue;
     }
@@ -62,6 +63,7 @@ async function scanRun(cwd: string, sessionId: string, runId: string, home: stri
   const store = new RunStore(cwd, sessionId, runId, home);
   const loaded = await store.load();
   await validateInventory(store, loaded);
+  await store.validateEvidence();
   await store.loadSummary();
   await store.loadOwnership();
   await store.systemPrompts();
