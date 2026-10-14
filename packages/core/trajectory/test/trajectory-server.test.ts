@@ -1114,3 +1114,151 @@ void test("Trajectory marks focused timing delivered only for the state a backpr
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/** Counts serializations of each publisher's state by its id. */
+function countPublisherEncodes(ids: readonly string[], action: () => void): Record<string, number> {
+  const stringify = JSON.stringify;
+  const counts = Object.fromEntries(ids.map((id) => [id, 0]));
+  JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+    const result = stringify(...args);
+    for (const id of ids) if (typeof result === "string" && result.includes(`"id":"${id}"`)) counts[id] = (counts[id] ?? 0) + 1;
+    return result;
+  }) as typeof JSON.stringify;
+  try { action(); } finally { JSON.stringify = stringify; }
+  return counts;
+}
+function titledTimingState(id: string, revision: number, title: string): Buffer {
+  const value = JSON.parse(timingState(id, revision, 3)) as { publisher: Record<string, unknown> };
+  value.publisher.title = title;
+  return maskedFrame(JSON.stringify(value));
+}
+function publisherTranscript(frame: unknown, publisherId: string, runId: string): { revision: number; timing?: unknown[] } {
+  const publisher = stateFrame(frame).publishers.find((candidate) => candidate.id === publisherId);
+  const run = publisher?.runs.find((candidate) => candidate.run.id === runId);
+  assert.ok(run);
+  return run.transcripts.agent;
+}
+function hasTitle(publisherId: string, title: string): (value: unknown) => boolean {
+  return (value) => Boolean(value && typeof value === "object" && (value as { type?: unknown }).type === "state" && (value as { publishers: { id?: unknown; title?: unknown }[] }).publishers.some((publisher) => publisher.id === publisherId && publisher.title === title));
+}
+
+void test("Trajectory serializes an unchanged publisher once for every browser and update", async () => {
+  const root = await mkdtemp(join(tmpdir(), "trajectory-server-publisher-cache-"));
+  const port = await availablePort();
+  const server = createTrajectoryServer(port, join(root, "trajectory.lock"));
+  const sides = serverSockets(server);
+  await listen(server, port);
+  const origin = `http://127.0.0.1:${String(port)}`;
+  const clients = [];
+  try {
+    for (let index = 0; index < 5; index += 1) clients.push(await handshake(port, origin));
+    const [aSide, bSide, focusedSide, secondSide, legacySide] = sides;
+    assert.ok(aSide && bSide && focusedSide && secondSide && legacySide);
+    const [, , focused, second, legacy] = clients.map(({ socket }) => socket);
+    assert.ok(focused && second && legacy);
+    aSide.emit("data", maskedFrame(JSON.stringify({ type: "publisher:attach", publisherId: "pubA" })));
+    bSide.emit("data", maskedFrame(JSON.stringify({ type: "publisher:attach", publisherId: "pubB" })));
+    for (const side of [focusedSide, secondSide, legacySide]) side.emit("data", maskedFrame(JSON.stringify({ type: "ui:attach" })));
+    for (const side of [focusedSide, secondSide]) side.emit("data", maskedFrame(JSON.stringify({ type: "ui:focus", publisherId: "pubA", runId: "focused" })));
+    aSide.emit("data", titledTimingState("pubA", 7, "A-7"));
+    bSide.emit("data", titledTimingState("pubB", 1, "B-1"));
+
+    // Two focused browsers and one legacy browser watch three changes of A; unchanged B is not serialized again.
+    const aUpdates = [titledTimingState("pubA", 8, "A-8"), titledTimingState("pubA", 9, "A-9"), titledTimingState("pubA", 9, "A-9b")];
+    assert.equal(countPublisherEncodes(["pubB"], () => { for (const update of aUpdates) aSide.emit("data", update); }).pubB, 0);
+    // A focused browser that already holds A's timing reuses A; B is serialized once for focused and once for legacy browsers.
+    const bUpdate = titledTimingState("pubB", 2, "B-2");
+    assert.deepEqual(countPublisherEncodes(["pubA", "pubB"], () => { bSide.emit("data", bUpdate); }), { pubA: 0, pubB: 2 });
+
+    // Every read starts before the frames arrive, because an unread socket drops them.
+    const [focusedLatest, secondLatest, legacyLatest] = await Promise.all([focused, second, legacy].map((socket) => readJsonFrame(socket, hasTitle("pubB", "B-2"))));
+    for (const latest of [focusedLatest, secondLatest]) {
+      assert.equal(publisherTranscript(latest, "pubA", "focused").revision, 9);
+      assert.equal(publisherTranscript(latest, "pubA", "focused").timing, undefined);
+      assert.deepEqual(publisherTranscript(latest, "pubA", "other").timing, []);
+      assert.deepEqual(publisherTranscript(latest, "pubB", "focused").timing, []);
+    }
+    assert.equal(publisherTranscript(legacyLatest, "pubA", "focused").timing?.length, 3);
+    assert.equal(publisherTranscript(legacyLatest, "pubB", "focused").timing?.length, 3);
+
+    focusedSide.emit("data", maskedFrame(JSON.stringify({ type: "ui:focus", publisherId: "pubB", runId: "focused" })));
+    const switched = await readJsonFrame(focused, hasTitle("pubB", "B-2"));
+    assert.equal(publisherTranscript(switched, "pubB", "focused").timing?.length, 3);
+    assert.deepEqual(publisherTranscript(switched, "pubA", "focused").timing, []);
+    // Refocusing starts a new delivery record, so A's timing ships again instead of a reused copy that omits it.
+    focusedSide.emit("data", maskedFrame(JSON.stringify({ type: "ui:focus", publisherId: "pubA", runId: "focused" })));
+    const refocused = await readJsonFrame(focused, hasTitle("pubB", "B-2"));
+    assert.equal(publisherTranscript(refocused, "pubA", "focused").timing?.length, 3);
+    assert.deepEqual(publisherTranscript(refocused, "pubB", "focused").timing, []);
+  } finally {
+    for (const { socket } of clients) socket.destroy();
+    server.closeAllConnections();
+    server.close();
+    server.unref();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** Decodes every frame a client socket receives from now on, so no frame is lost between reads. */
+function collectFrames(socket: Socket): unknown[] {
+  const frames: unknown[] = [];
+  let buffer = Buffer.alloc(0);
+  socket.on("data", (chunk: Buffer) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (let decoded = decodeTextFrame(buffer); decoded; decoded = decodeTextFrame(buffer)) { buffer = buffer.subarray(decoded.consumed); frames.push(JSON.parse(decoded.payload)); }
+  });
+  return frames;
+}
+async function until(condition: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+const viewerCounts = (frames: readonly unknown[]): number[] => frames.filter(isViewerFrame).map((frame) => (frame as { count: number }).count);
+const stateTitles = (frames: readonly unknown[]): string[] => frames.flatMap((frame) => stateTitle(frame) ?? []);
+
+void test("Trajectory sends no state to a hidden browser, counts only visible viewers, and resumes it with the latest focused state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "trajectory-server-hidden-"));
+  const port = await availablePort();
+  const server = createTrajectoryServer(port, join(root, "trajectory.lock"));
+  const sides = serverSockets(server);
+  await listen(server, port);
+  const origin = `http://127.0.0.1:${String(port)}`;
+  const clients = [];
+  try {
+    for (let index = 0; index < 4; index += 1) clients.push(await handshake(port, origin));
+    const [publisherSide, visibleSide, hiddenSide, legacySide] = sides;
+    assert.ok(publisherSide && visibleSide && hiddenSide && legacySide);
+    const [publisher, visible, hidden, legacy] = clients.map(({ socket }) => collectFrames(socket));
+    assert.ok(publisher && visible && hidden && legacy);
+    publisherSide.emit("data", maskedFrame(JSON.stringify({ type: "publisher:attach", publisherId: "pub" })));
+    for (const side of [visibleSide, hiddenSide, legacySide]) side.emit("data", maskedFrame(JSON.stringify({ type: "ui:attach" })));
+    visibleSide.emit("data", maskedFrame(JSON.stringify({ type: "ui:focus", publisherId: "pub", runId: "focused", visible: true })));
+    hiddenSide.emit("data", maskedFrame(JSON.stringify({ type: "ui:focus", publisherId: null, runId: null, visible: false })));
+    publisherSide.emit("data", titledTimingState("pub", 7, "S1"));
+    await until(() => stateTitles(visible).includes("S1") && stateTitles(legacy).includes("S1"), "visible and legacy browsers to receive S1");
+    // The hidden browser's transcript reply is written after any state it was sent, so its arrival proves no state was.
+    hiddenSide.emit("data", maskedFrame(JSON.stringify({ type: "ui:transcript", requestId: "hidden-request", publisherId: "pub", runId: "focused", agentId: "agent", revision: 7 })));
+    await until(() => publisher.some((frame) => (frame as { type?: unknown }).type === "publisher:transcript"), "the transcript request to reach the publisher");
+    const request = publisher.find((frame) => (frame as { type?: unknown }).type === "publisher:transcript") as { requestId: string };
+    publisherSide.emit("data", maskedFrame(JSON.stringify({ type: "publisher:transcript-result", requestId: request.requestId, publisherId: "pub", runId: "focused", agentId: "agent", requestedRevision: 7, ok: true, status: "available", revision: 7, entries: [] })));
+    await until(() => hidden.some((frame) => (frame as { type?: unknown }).type === "transcript"), "the hidden browser's transcript reply");
+    assert.deepEqual(stateTitles(hidden), []);
+    assert.deepEqual(viewerCounts(publisher), [0, 1, 2, 3, 2]);
+
+    hiddenSide.emit("data", maskedFrame(JSON.stringify({ type: "ui:focus", publisherId: "pub", runId: "focused", visible: true })));
+    await until(() => stateTitles(hidden).includes("S1"), "the resumed browser to receive S1");
+    const resumed = hidden.find((frame) => stateTitle(frame) === "S1");
+    assert.equal(publisherTranscript(resumed, "pub", "focused").timing?.length, 3);
+    await until(() => viewerCounts(publisher).length === 6, "the visible viewer count");
+    assert.equal(viewerCounts(publisher).at(-1), 3);
+  } finally {
+    for (const { socket } of clients) socket.destroy();
+    server.closeAllConnections();
+    server.close();
+    server.unref();
+    await rm(root, { recursive: true, force: true });
+  }
+});

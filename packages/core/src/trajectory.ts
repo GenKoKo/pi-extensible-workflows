@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createReadToolDefinition, createWriteToolDefinition, DefaultPackageManager, getAgentDir, SettingsManager, DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { listRunIds, RunStore, type AwaitingCheckpoint, type CompletedOperation, type EffectiveSystemPrompt, type PersistedRun } from "./persistence.js";
 import { navigatorAttentionSortByState } from "./host-view.js";
-import type { AgentAttemptSummary, AgentRecord, JsonValue, LaunchSnapshot, WorkflowAgentSessionReference, WorkflowErrorCode, WorkflowScriptCall } from "./types.js";
+import type { AgentAttemptSummary, AgentRecord, JsonValue, LaunchSnapshot, RunState, WorkflowAgentSessionReference, WorkflowBudgetUsage, WorkflowErrorCode, WorkflowScriptCall } from "./types.js";
 import { normalizeSubagentRunRequest, type SubagentProgress, type SubagentRunRequest, type SubagentStatus } from "../subagents/src/contracts.js";
 import { statusValue, subagentErrorValue } from "../subagents/src/decode.js";
 import { isNodeError, jsonValue, object, resourcePatternHasMagic, selectResourcesByLayers } from "./utils.js";
@@ -110,6 +110,11 @@ export type TrajectoryPublisherInput = {
   loadTranscript?: TrajectoryTranscriptLoader;
   handleAction: TrajectoryActionHandler;
 };
+
+/** A running run's duration grows with every clock read, and viewers derive its live runtime from the clock, so it shows the persisted duration; one clock tick would otherwise republish the whole state. Other states keep live usage, which a pausing run's runtime still reads. */
+export function trajectoryRunUsage(state: RunState, live: WorkflowBudgetUsage, persisted: WorkflowBudgetUsage | undefined): WorkflowBudgetUsage {
+  return state === "running" && persisted !== undefined ? { ...live, durationMs: persisted.durationMs } : live;
+}
 
 function sessionFile(reference: WorkflowAgentSessionReference | undefined): string | undefined {
   const locator = reference?.locator;

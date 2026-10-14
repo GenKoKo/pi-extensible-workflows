@@ -20,7 +20,7 @@ import { agentHandleTurnPath, agentIdentityPath, agentWorktree, encoded, execute
 import { prepareScriptToolLoadout, scriptTool, scriptToolContext, scriptToolValue, validateScriptToolReferences } from "./script-tools.js";
 import backgroundWidget, { type BackgroundWidgetAPI } from "./background-widget.js";
 import { showChangelogNotice } from "./changelog.js";
-import { createTrajectoryRunLoader, createTrajectoryRunMetadataLoader, createTrajectorySubagentLoader, createTrajectorySubagentMetadataLoader, createTrajectoryTranscriptLoader, type TrajectoryActionRequest, type TrajectoryActionResult, type TrajectorySubagent } from "./trajectory.js";
+import { createTrajectoryRunLoader, createTrajectoryRunMetadataLoader, createTrajectorySubagentLoader, createTrajectorySubagentMetadataLoader, createTrajectoryTranscriptLoader, trajectoryRunUsage, type TrajectoryActionRequest, type TrajectoryActionResult, type TrajectorySubagent } from "./trajectory.js";
 import { getTrajectoryHost, type TrajectoryPublisherProvider } from "./trajectory-host-handle.js";
 import { getSubagentManager } from "./subagent-manager-handle.js";
 import { HARD_TERMINAL_RUN_STATES, LAUNCH_SNAPSHOT_IDENTITY_VERSION, THINKING_LEVELS, WORKFLOW_BLOCKED_EVENT, WorkflowError, type WorkflowFunction, isContextFileScope, isExternallyEndedRunState, isHardTerminalRunState, type AgentAccounting, type AgentIdentity, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type JsonValue, type LaunchSnapshot, type LiveSessionHandoff, type HardTerminalRunState, type ModelSpec, type PreparedAgentSession, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type ToolIdentity, type WorkflowAgentSession, type WorkflowErrorCode, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowSettings, type WorkflowScriptCall, type WorkflowSettingsResolution, type WorkflowWorktreeReference } from "./types.js";
@@ -464,7 +464,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
   const overlayLiveRun = (run: PersistedRun): PersistedRun => {
     const active = runs.get(run.id);
     const live = withLiveActivities(run);
-    return active ? { ...live, state: active.lifecycle.state, usage: active.budget.usage } : live;
+    return active ? { ...live, state: active.lifecycle.state, usage: trajectoryRunUsage(active.lifecycle.state, active.budget.usage, live.usage) } : live;
   };
   /** Overlays the freshest observed status of a live subagent onto its persisted summary; a settled status that already matches is dropped from the live map. */
   const overlayLiveSubagent = (subagent: TrajectorySubagent): TrajectorySubagent => {

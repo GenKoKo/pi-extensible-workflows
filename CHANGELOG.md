@@ -4,6 +4,9 @@
 ### Fixes
 
 - The Trajectory server assembles large WebSocket frames in a reusable buffer instead of recopying the partial frame on every TCP chunk, and a slow browser keeps only the newest state until its socket drains instead of serializing every replaced snapshot. A 16 MiB publisher frame now costs about one copy instead of about 130.
+- A running workflow no longer republishes its whole Trajectory state every poll just because its live duration advanced. While running, Trajectory carries the persisted duration and the browser keeps deriving runtime from the clock, rescaling the gantt as the timeline grows. Real changes (state, usage, agents, and persisted updates) still publish on the next poll, and finished runs show their exact duration.
+- The Trajectory server serializes each publisher's state once and shares it across browsers and later updates until that publisher changes, so one changing session no longer re-encodes every other session for every open browser.
+- A hidden Trajectory tab receives no state updates and no longer counts as a viewer, so with only hidden tabs open publishers return to their idle poll. Showing the tab sends the latest state at once, keeping its selection.
 
 ## [6.2.1] - 2026-10-13
 

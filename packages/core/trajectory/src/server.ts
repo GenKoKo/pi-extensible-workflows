@@ -14,7 +14,7 @@ const TRAJECTORY_IDLE_EXIT_MS = 5 * 60 * 1000;
 type Socket = import("node:stream").Duplex;
 type ClientKind = "publisher" | "browser";
 type RunFocus = { publisherId: string; runId: string };
-type Client = { socket: Socket; kind: ClientKind; publisherId?: string; buffer: Buffer; buffered: number; pendingState: State | undefined; backpressured: boolean; superseded: boolean; focusAware?: boolean; focus?: RunFocus; sentTiming?: Map<string, number> };
+type Client = { socket: Socket; kind: ClientKind; publisherId?: string; buffer: Buffer; buffered: number; pendingState: State | undefined; backpressured: boolean; superseded: boolean; focusAware?: boolean; hidden?: boolean; focus?: RunFocus; sentTiming?: Map<string, number>; focusedJson?: { publisher: object; sentTiming: Map<string, number>; json: string } };
 type State = { type: "state"; publishers: readonly unknown[]; updatedAt: number; initial?: boolean; truncated?: boolean };
 type PendingRequest = { requestId: string; kind: "transcript" | "action"; browser: Client; publisherId: string; publisher: Client; target: { runId?: string; agentId?: string; subagentId?: string; revision?: number }; timer: ReturnType<typeof setTimeout> };
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
@@ -73,31 +73,27 @@ function forgetTiming(run: unknown, prefix: string, sent: Map<string, number>): 
   if (!record.transcripts || typeof record.transcripts !== "object" || Array.isArray(record.transcripts)) return;
   for (const id of Object.keys(record.transcripts)) sent.delete(`${prefix}\t${id}`);
 }
-/** Tool-timing only drives the focused run's gantt, so every other run ships without it. */
-function focusedState(state: State, focus: RunFocus | undefined, sent?: Map<string, number>, mark: (key: string, revision: number) => void = () => {}): State {
-  return {
-    ...state,
-    publishers: state.publishers.map((publisher) => {
-      if (!publisher || typeof publisher !== "object" || Array.isArray(publisher)) return publisher;
-      const value = publisher as { id?: unknown; runs?: unknown };
-      const runs: readonly unknown[] | undefined = Array.isArray(value.runs) ? value.runs as readonly unknown[] : undefined;
-      if (!runs) return publisher;
-      const focusedPublisher = focus !== undefined && value.id === focus.publisherId;
-      return { ...value, runs: runs.map((run) => {
-        const id = run && typeof run === "object" && !Array.isArray(run) ? (run as { run?: { id?: unknown } }).run?.id : undefined;
-        const prefix = `${String(value.id)}\t${String(id)}`;
-        if (!focusedPublisher || id !== focus.runId) { if (sent) forgetTiming(run, prefix, sent); return withoutTiming(run); }
-        return sent ? knownTiming(run, prefix, sent, mark) : run;
-      }) };
-    }),
-  };
+function isFocusedPublisher(publisher: unknown, focus: RunFocus | undefined): boolean {
+  return focus !== undefined && Boolean(publisher && typeof publisher === "object" && !Array.isArray(publisher)) && (publisher as { id?: unknown }).id === focus.publisherId;
 }
-function compactPublishers(publishers: readonly unknown[]): unknown[] {
-  return publishers.map((publisher) => {
-    if (!publisher || typeof publisher !== "object" || Array.isArray(publisher)) return publisher;
-    const value = publisher as { runs?: unknown; subagents?: unknown };
-    return { ...value, ...(Array.isArray(value.runs) ? { runs: value.runs.map(compactRun) } : {}), ...(Array.isArray(value.subagents) ? { subagents: value.subagents.map(compactSubagent) } : {}) };
-  });
+/** Tool-timing only drives the focused run's gantt, so every other run ships without it. */
+function focusedPublisher(publisher: unknown, focus: RunFocus | undefined, sent?: Map<string, number>, mark: (key: string, revision: number) => void = () => {}): unknown {
+  if (!publisher || typeof publisher !== "object" || Array.isArray(publisher)) return publisher;
+  const value = publisher as { id?: unknown; runs?: unknown };
+  const runs: readonly unknown[] | undefined = Array.isArray(value.runs) ? value.runs as readonly unknown[] : undefined;
+  if (!runs) return publisher;
+  const focused = isFocusedPublisher(publisher, focus);
+  return { ...value, runs: runs.map((run) => {
+    const id = run && typeof run === "object" && !Array.isArray(run) ? (run as { run?: { id?: unknown } }).run?.id : undefined;
+    const prefix = `${String(value.id)}\t${String(id)}`;
+    if (!focused || id !== focus?.runId) { if (sent) forgetTiming(run, prefix, sent); return withoutTiming(run); }
+    return sent ? knownTiming(run, prefix, sent, mark) : run;
+  }) };
+}
+function compactPublisher(publisher: unknown): unknown {
+  if (!publisher || typeof publisher !== "object" || Array.isArray(publisher)) return publisher;
+  const value = publisher as { runs?: unknown; subagents?: unknown };
+  return { ...value, ...(Array.isArray(value.runs) ? { runs: value.runs.map(compactRun) } : {}), ...(Array.isArray(value.subagents) ? { subagents: value.subagents.map(compactSubagent) } : {}) };
 }
 const MAX_METADATA_STRING_BYTES = 64 * 1024;
 const MAX_METADATA_ARRAY_ENTRIES = 256;
@@ -132,7 +128,7 @@ function tinyPublisher(publisher: unknown): unknown {
   const value = publisher as Record<string, unknown>;
   return { id: typeof value.id === "string" ? value.id.slice(0, 200) : "publisher", title: typeof value.title === "string" ? value.title.slice(0, 200) : undefined, cwd: typeof value.cwd === "string" ? value.cwd.slice(0, 1024) : undefined, sessionId: typeof value.sessionId === "string" ? value.sessionId.slice(0, 200) : undefined, connected: value.connected === true };
 }
-function encodePublisherList(publishers: readonly unknown[], updatedAt: number, maxBytes: number, initial: boolean, truncated: boolean, projector: (publisher: unknown) => unknown, fallback?: (publisher: unknown) => unknown): { serialized: string; truncated: boolean } {
+function encodePublisherList(publishers: readonly unknown[], updatedAt: number, maxBytes: number, initial: boolean, truncated: boolean, serialize: (publisher: unknown) => string, fallback?: (publisher: unknown) => string): { serialized: string; truncated: boolean } {
   const prefix = `{"type":"state","publishers":[`;
   const suffix = (isTruncated: boolean): string => `],"updatedAt":${String(updatedAt)}${initial ? ",\"initial\":true" : ""}${isTruncated ? ",\"truncated\":true" : ""}}`;
   const markerBytes = Buffer.byteLength(suffix(true)) - Buffer.byteLength(suffix(false));
@@ -141,10 +137,10 @@ function encodePublisherList(publishers: readonly unknown[], updatedAt: number, 
   let wasTruncated = truncated;
   for (const publisher of publishers) {
     let serialized: string;
-    try { serialized = JSON.stringify(projector(publisher)); } catch { wasTruncated = true; continue; }
+    try { serialized = serialize(publisher); } catch { wasTruncated = true; continue; }
     let nextBytes = bytes + Buffer.byteLength(serialized) + (parts.length ? 1 : 0);
     if (nextBytes + markerBytes >= maxBytes && fallback !== undefined) {
-      try { serialized = JSON.stringify(fallback(publisher)); } catch { wasTruncated = true; continue; }
+      try { serialized = fallback(publisher); } catch { wasTruncated = true; continue; }
       nextBytes = bytes + Buffer.byteLength(serialized) + (parts.length ? 1 : 0);
     }
     if (nextBytes + markerBytes >= maxBytes) { wasTruncated = true; continue; }
@@ -155,12 +151,12 @@ function encodePublisherList(publishers: readonly unknown[], updatedAt: number, 
   if (Buffer.byteLength(serialized) < maxBytes) return { serialized, truncated: wasTruncated };
   return { serialized: `${prefix}${suffix(true)}`, truncated: true };
 }
-function encodeState(state: State, maxBytes: number): string {
+/** `serialize` must equal `JSON.stringify(project(publisher))`; it may return a copy encoded earlier for the same publisher state. */
+function encodeState(state: State, maxBytes: number, project: (publisher: unknown) => unknown = compactPublisher, serialize: (publisher: unknown) => string = (publisher) => JSON.stringify(project(publisher))): string {
   const initial = state.initial === true;
-  const compactedPublishers = compactPublishers(state.publishers);
-  const full = encodePublisherList(compactedPublishers, state.updatedAt, maxBytes, initial, state.truncated === true, (publisher) => publisher);
+  const full = encodePublisherList(state.publishers, state.updatedAt, maxBytes, initial, state.truncated === true, serialize);
   if (!full.truncated) return full.serialized;
-  return encodePublisherList(compactedPublishers, state.updatedAt, maxBytes, initial, true, minimalPublisher, tinyPublisher).serialized;
+  return encodePublisherList(state.publishers, state.updatedAt, maxBytes, initial, true, (publisher) => JSON.stringify(minimalPublisher(project(publisher))), (publisher) => JSON.stringify(tinyPublisher(project(publisher)))).serialized;
 }
 function encodeApplication(value: unknown, maxBytes: number): string {
   let serialized: string;
@@ -259,7 +255,7 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
   const serverFingerprint = options.fingerprint ?? "";
   let startedAt = 0;
   const clients = new Set<Client>();
-  const publishers = new Map<string, { client: Client; value: Record<string, unknown>; generation: number }>();
+  const publishers = new Map<string, { client: Client; value: Record<string, unknown>; generation: number; state?: Record<string, unknown> }>();
   let latest: State = { type: "state", publishers: [], updatedAt: Date.now(), initial: true };
   const pending = new Map<Client, Map<string, PendingRequest>>();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -309,21 +305,46 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
   const cancelIdleExit = () => {
     if (idleTimer !== undefined) { clearTimeout(idleTimer); idleTimer = undefined; }
   };
+  // Each published publisher state is an immutable object, so its encodings are shared by every browser and kept only while that state is referenced.
+  const encodedPublishers = new WeakMap<object, string>();
+  const encodedUnfocusedPublishers = new WeakMap<object, string>();
+  const reuse = (cache: WeakMap<object, string>, publisher: unknown, encode: () => string): string => {
+    if (!publisher || typeof publisher !== "object") return encode();
+    let json = cache.get(publisher);
+    if (json === undefined) { json = encode(); cache.set(publisher, json); }
+    return json;
+  };
+  const sharedFrame = (state: State): Buffer => frame(encodeState(state, maxFrameBytes, compactPublisher, (publisher) => reuse(encodedPublishers, publisher, () => JSON.stringify(compactPublisher(publisher)))), maxFrameBytes);
   // A backpressured browser keeps only the newest state and encodes it on drain, so replaced snapshots are never serialized.
   // Timing counts as delivered only for the state actually written, encoded with the focus current at that moment.
+  // A hidden browser gets no state; showing it again sends ui:focus, which delivers the latest state.
   const deliverState = (client: Client, state: State, shared?: () => Buffer): void => {
+    if (client.hidden === true) { client.pendingState = undefined; return; }
     if (client.backpressured) { client.pendingState = state; return; }
-    if (client.focusAware !== true) { writeFrame(client, shared?.() ?? frame(encodeState(state, maxFrameBytes), maxFrameBytes)); return; }
+    if (client.focusAware !== true) { writeFrame(client, shared?.() ?? sharedFrame(state)); return; }
     const sent = (client.sentTiming ??= new Map<string, number>());
+    const focus = client.focus;
     const marks: [string, number][] = [];
-    const stateFrame = frame(encodeState(focusedState(state, client.focus, sent, (key, revision) => marks.push([key, revision])), maxFrameBytes), maxFrameBytes);
+    const project = (publisher: unknown): unknown => compactPublisher(focusedPublisher(publisher, focus, sent, (key, revision) => marks.push([key, revision])));
+    // ui:focus replaces sentTiming, so only the focused run ever has delivery marks and other publishers encode the same for every browser.
+    // The focused publisher is reused only after an encoding that shipped no new timing, because then the same state encodes the same until focus changes.
+    const serialize = (publisher: unknown): string => {
+      if (!isFocusedPublisher(publisher, focus)) return reuse(encodedUnfocusedPublishers, publisher, () => JSON.stringify(compactPublisher(focusedPublisher(publisher, undefined))));
+      const cached = client.focusedJson;
+      if (cached !== undefined && cached.publisher === publisher && cached.sentTiming === sent) return cached.json;
+      const before = marks.length;
+      const json = JSON.stringify(project(publisher));
+      if (marks.length === before && publisher && typeof publisher === "object") client.focusedJson = { publisher, sentTiming: sent, json };
+      return json;
+    };
+    const stateFrame = frame(encodeState(state, maxFrameBytes, project, serialize), maxFrameBytes);
     writeFrame(client, stateFrame, () => { for (const [key, revision] of marks) sent.set(key, revision); });
   };
   const broadcast = (value: unknown) => {
     if (isState(value)) {
       try {
         let shared: Buffer | undefined;
-        for (const client of clients) if (client.kind === "browser") deliverState(client, value, () => shared ??= frame(encodeState(value, maxFrameBytes), maxFrameBytes));
+        for (const client of clients) if (client.kind === "browser") deliverState(client, value, () => shared ??= sharedFrame(value));
       } catch {
         for (const client of clients) if (client.kind === "browser") client.socket.destroy();
       }
@@ -332,15 +353,15 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
     for (const client of clients) if (client.kind === "browser") emit(client, value);
   };
   let viewers = 0;
-  // Publishers poll their run directory, so they only need a fast cadence while a browser is watching.
+  // Publishers poll their run directory, so they only need a fast cadence while a visible browser is watching.
   const notifyViewers = () => {
-    const count = [...clients].filter((candidate) => candidate.kind === "browser").length;
+    const count = [...clients].filter((candidate) => candidate.kind === "browser" && candidate.hidden !== true).length;
     if (count === viewers) return;
     viewers = count;
     for (const candidate of clients) if (candidate.kind === "publisher") emit(candidate, { type: "publisher:viewers", count });
   };
   const publishState = () => {
-    const values = [...publishers.values()].map(({ value, generation }) => ({ ...value, generation }));
+    const values = [...publishers.values()].map((entry) => entry.state ??= { ...entry.value, generation: entry.generation });
     latest = { type: "state", publishers: values, updatedAt: Date.now() };
     broadcast(latest);
   };
@@ -361,15 +382,18 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
     const message = value as Record<string, unknown>;
     if (client.superseded) return;
     if (message.type === "publisher:detach" && client.kind === "publisher" && client.publisherId && publishers.get(client.publisherId)?.client === client) { clearPending(client, "Publisher is disconnected"); publishers.delete(client.publisherId); publishState(); scheduleIdleExit(); return; }
-    if (message.type === "ui:attach") { client.kind = "browser"; try { deliverState(client, latest); } catch { client.socket.destroy(); } notifyViewers(); return; }
+    if (message.type === "ui:attach") { client.kind = "browser"; client.hidden = message.visible === false; try { deliverState(client, latest); } catch { client.socket.destroy(); } notifyViewers(); return; }
     if (message.type === "ui:focus" && client.kind === "browser") {
       const publisherId = typeof message.publisherId === "string" ? message.publisherId : undefined;
       const runId = typeof message.runId === "string" ? message.runId : undefined;
       client.focusAware = true;
+      // Browsers that predate visibility omit the field and stay visible.
+      client.hidden = message.visible === false;
       client.sentTiming = new Map<string, number>();
       if (publisherId !== undefined && runId !== undefined) client.focus = { publisherId, runId };
       else delete client.focus;
       try { deliverState(client, latest); } catch { client.socket.destroy(); }
+      notifyViewers();
       return;
     }
     if (client.kind === "publisher" && message.type === "publisher:attach" && typeof message.publisherId === "string") {
