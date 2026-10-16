@@ -82,6 +82,8 @@ void test("all top-level commands handle help without running", async () => {
     assert.match(result.stdout, usage);
     assert.equal(result.stderr, "");
   }
+  const share = await invoke(["share", "--help"]);
+  assert.match(share.stdout, /static Trajectory report[\s\S]*gh CLI/);
 });
 
 void test("inspect and transcript help do not invoke their handlers", async () => {
@@ -94,4 +96,14 @@ void test("inspect and transcript help do not invoke their handlers", async () =
   assert.equal(transcribed, false);
   assert.match(stdout, /Usage: piewf inspect/);
   assert.match(stdout, /Usage: piewf transcript/);
+});
+
+void test("invalid transcript invocations print transcript usage on stderr", async () => {
+  const usage = ["Usage: piewf transcript <session-file>", "", "Arguments:", "  <session-file>".padEnd(28) + "Path to a Pi session JSONL file", "", "Options:", "  -h, --help".padEnd(28) + "Show this help"].join("\n") + "\n";
+  for (const args of [["transcript"], ["transcript", "first", "second"]]) {
+    const result = await invoke(args);
+    assert.equal(result.exit, 1);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, usage);
+  }
 });

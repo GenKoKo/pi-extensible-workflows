@@ -222,7 +222,7 @@ function doctorUsage(): string { return ["Usage: piewf doctor [--agent-options <
 function doctorCleanupUsage(): string { return ["Usage: piewf doctor cleanup [--older-than-days <days>] [--yes]", "", "Options:", "  --older-than-days <days>".padEnd(28) + "Remove data older than this many days", "  --yes".padEnd(28) + "Skip the cleanup confirmation", "  -h, --help".padEnd(28) + "Show this help"].join("\n") + "\n"; }
 function inspectUsage(): string { return ["Usage: piewf inspect [session-id] [--json|--summary] [--failed]", "", "Options:", "  --json".padEnd(28) + "Print machine-readable JSON", "  --summary".padEnd(28) + "Print a concise summary", "  --failed".padEnd(28) + "Show only failed workflow runs", "  -h, --help".padEnd(28) + "Show this help"].join("\n") + "\n"; }
 function transcriptUsage(): string { return ["Usage: piewf transcript <session-file>", "", "Arguments:", "  <session-file>".padEnd(28) + "Path to a Pi session JSONL file", "", "Options:", "  -h, --help".padEnd(28) + "Show this help"].join("\n") + "\n"; }
-function shareUsage(): string { return ["Usage: piewf share <run-id>", "", "Upload a run report as a secret GitHub gist.", "Secret gists are unlisted, not private: anyone with the link can read the full report.", "", "Options:", "  -h, --help".padEnd(28) + "Show this help"].join("\n") + "\n"; }
+function shareUsage(): string { return ["Usage: piewf share <run-id>", "", "Export the run as a static Trajectory report and upload it as a secret GitHub gist via the gh CLI.", "Secret gists are unlisted, not private: anyone with the link can read the full report.", "", "Options:", "  -h, --help".padEnd(28) + "Show this help"].join("\n") + "\n"; }
 function topLevelUsage(): string { return ["piewf - run, inspect and share Pi extensible workflows from the terminal", "", "Usage:", "  piewf <command> [options]", "", "Commands:", "  run <workflow-name> [args]".padEnd(34) + "Run a registered workflow headlessly", "  run --script <path>".padEnd(34) + "Run a workflow from a JavaScript file", "  export <workflow-name>".padEnd(34) + "Export a workflow as a standalone launcher", "  bundle <workflow-name>".padEnd(34) + "Package a workflow as a portable bundle", "  inspect [session-id]".padEnd(34) + "Inspect workflow runs (interactive, --json or --summary)", "  transcript <session-file>".padEnd(34) + "Print a readable transcript of a session file", "  share <run-id>".padEnd(34) + "Upload a run report as a secret GitHub gist", "  doctor".padEnd(34) + "Check the workflow setup and report problems", "  doctor cleanup".padEnd(34) + "Remove old persisted run data", "", "Global options:", "  -h, --help".padEnd(34) + "Show this help", "  -v, --version".padEnd(34) + "Show the piewf version", "", "Run 'piewf <command> --help' for the options of a command."].join("\n") + "\n"; }
 function cliVersion(): string {
   const manifest: unknown = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
@@ -685,8 +685,9 @@ export async function runCli(args: readonly string[], options: CliOptions = {}, 
     }
     catch (error) { write(`Error: ${errorText(error)}\n`); return 1; }
   }
-  if (args[0] === "transcript" && args.slice(1).some((arg) => arg === "--help" || arg === "-h")) { write(transcriptUsage()); return 0; }
-  if (args[0] === "transcript" && args.length === 2) {
+  if (args[0] === "transcript") {
+    if (args.slice(1).some((arg) => arg === "--help" || arg === "-h")) { write(transcriptUsage()); return 0; }
+    if (args.length !== 2) { stderr(transcriptUsage()); return 1; }
     try {
       const transcript = requiredArg(args, 1);
       if (options.transcript) await options.transcript(transcript);
