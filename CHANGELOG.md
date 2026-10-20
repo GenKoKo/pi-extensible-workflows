@@ -6,6 +6,10 @@
 - A failed run releases its retry lineage before its `failed` state becomes visible, so a `workflow_retry` issued as soon as the state reads `failed` is no longer rejected with "An active retry already owns lineage".
 - Retention no longer stops with "Run inventory contains an unrecognized artifact" when it meets a `summary.json` that is being written. Only the exact temporary name that the atomic write uses is accepted.
 
+### Trajectory fixes
+
+- The Trajectory server no longer drops a publisher whose TCP chunk carries several complete WebSocket frames that together exceed the frame limit. Only the unfinished frame left after parsing is bounded, and an oversized receive buffer is trimmed after each chunk.
+
 ## [6.2.2] - 2026-10-18
 
 ### Fixes
