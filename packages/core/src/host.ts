@@ -168,9 +168,9 @@ function isWorkflowToolResult(value: unknown): value is WorkflowToolResult {
   return object(value) && (value.runId === undefined || typeof value.runId === "string") && (value.run === undefined || isPersistedRun(value.run)) && (value.value === undefined || jsonValue(value.value)) && (value.preview === undefined || typeof value.preview === "string");
 }
 
-function deliver(pi: WorkflowExtensionAPI, content: string): void {
+function deliver(pi: WorkflowExtensionAPI, content: string, triggerTurn: boolean): void {
   if (typeof pi.sendMessage !== "function") return;
-  pi.sendMessage({ customType: "workflow", content, display: true }, { deliverAs: "followUp", triggerTurn: true });
+  pi.sendMessage({ customType: "workflow", content, display: true }, { deliverAs: "followUp", triggerTurn });
 }
 const WORKFLOW_WARNING_ENTRY = "workflow-warning";
 const PROGRESS_COALESCE_MS = 100;
@@ -345,7 +345,10 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
   // Extension load failures a headless launcher reported for this host. They hold for the whole process, so every executor,
   // including those that paused resume, cold resume and retry create, keeps failing ownerless options closed.
   let extensionLoad: AgentExecutionRoot["extensionLoad"];
-  const deliveryController = new ForegroundDeliveryController({ runs, warn: (content: string) => { deliverWarning(pi, content); }, ...(typeof pi.sendMessage === "function" ? { deliver: (content: string) => { deliver(pi, content); } } : {}) });
+  // Set once session_shutdown starts; the session is never started again. Deliveries made after it, such as a run interrupted
+  // by the shutdown, are still recorded in the session but must not start a turn in a session that is being disposed.
+  let shuttingDown = false;
+  const deliveryController = new ForegroundDeliveryController({ runs, warn: (content: string) => { deliverWarning(pi, content); }, ...(typeof pi.sendMessage === "function" ? { deliver: (content: string) => { deliver(pi, content, !shuttingDown); } } : {}) });
   let releaseWorkflowRegistry: (() => void) | undefined;
   const providerRecoveryLane = new SerialLane();
   const enqueueProviderRecovery = <T>(task: () => Promise<T>): Promise<T> => providerRecoveryLane.run(task);
@@ -840,7 +843,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     if ((await run.store.awaitingCheckpoints()).length === 0) await run.lifecycle.resolveAwaitingInput();
     run.checkpointResolvers.get(checkpoint.path)?.(approved);
     run.checkpointResolvers.delete(checkpoint.path);
-    if (!silent) deliver(pi, `Workflow ${run.metadata.name} checkpoint ${name}: ${approved ? "Approved" : "Rejected"}.`);
+    if (!silent) deliver(pi, `Workflow ${run.metadata.name} checkpoint ${name}: ${approved ? "Approved" : "Rejected"}.`, !shuttingDown);
     return true;
   };
   const backgroundCheckpointDeliveries = new Set<string>();
@@ -848,7 +851,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     const key = `${runId}:${checkpoint.path}`;
     if (backgroundCheckpointDeliveries.has(key)) return;
     backgroundCheckpointDeliveries.add(key);
-    deliver(pi, `Workflow ${workflowName} checkpoint ${checkpoint.name}: ${checkpoint.prompt}\nContext: ${JSON.stringify(checkpoint.context)}\nRespond with workflow_respond.`);
+    deliver(pi, `Workflow ${workflowName} checkpoint ${checkpoint.name}: ${checkpoint.prompt}\nContext: ${JSON.stringify(checkpoint.context)}\nRespond with workflow_respond.`, !shuttingDown);
   };
   const checkpointBridge = (runId: string, store: RunStore, metadata: WorkflowMetadata, foreground: boolean | (() => boolean), ui?: { select?: (prompt: string, options: string[]) => Promise<string | undefined> }, headless = false) => {
     const checkpointCounters = new Map<string, number>();
@@ -1078,7 +1081,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     };
   };
   const recovery = createWorkflowRecovery({
-    pi, home, runs, scheduler, eventPublisher, persistRunState, projectTrusted, resumeHostContext, ensureSessionLease, coordinateRunMutation, createAgentExecutor, activeSnapshotTools, frozenResourcePolicy, resolveLaunchPrologue: resumeLaunchPrologue, workflowAgentHandler, shellForRun, toolForRun, resolveWorktree, checkpointBridge, phaseBridge, logBridge, lifecycleFor, createProviderErrorRecovery, cleanupTerminalRun, deliver: (content) => { deliver(pi, content); }, deliverTerminal: deliveryController.deliverTerminal, trackDelivery: deliveryController.trackDelivery, workflowToolUpdate, registry, modelSpec,
+    pi, home, runs, scheduler, eventPublisher, persistRunState, projectTrusted, resumeHostContext, ensureSessionLease, coordinateRunMutation, createAgentExecutor, activeSnapshotTools, frozenResourcePolicy, resolveLaunchPrologue: resumeLaunchPrologue, workflowAgentHandler, shellForRun, toolForRun, resolveWorktree, checkpointBridge, phaseBridge, logBridge, lifecycleFor, createProviderErrorRecovery, cleanupTerminalRun, deliver: (content) => { deliver(pi, content, !shuttingDown); }, deliverTerminal: deliveryController.deliverTerminal, trackDelivery: deliveryController.trackDelivery, workflowToolUpdate, registry, modelSpec,
   });
   const resumeSelectedWorkflow = async (runId: string, foreground: boolean, context: unknown, budgetPatch?: unknown): Promise<{ workflowName: string; state: "running" | "completed" | "awaiting_approval"; attached: boolean; value?: JsonValue }> => {
     const run = runs.get(runId);
@@ -1203,12 +1206,12 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
       eventPublisher.seedBudget(runId, loaded.run.budgetEvents);
       const budgetRuntime = new WorkflowBudgetRuntime(budget, loaded.run.budgetVersion ?? 1, loaded.run.usage, loaded.run.budgetEvents, { active: loaded.run.state === "running" });
       const lifecycle = lifecycleFor(store, loaded.run.state, loaded.snapshot.metadata);
-      const providerPause = async () => { deliver(pi, `Workflow ${loaded.snapshot.metadata.name} paused: provider limit.`); await lifecycle.providerPause(); };
+      const providerPause = async () => { deliver(pi, `Workflow ${loaded.snapshot.metadata.name} paused: provider limit.`, !shuttingDown); await lifecycle.providerPause(); };
       const abortController = new AbortController();
       const providerErrorRecovery = createProviderErrorRecovery(ctx, new Set(loaded.snapshot.models), () => { abortController.abort(); });
       runs.set(runId, { executor: createAgentExecutor({ cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), model, tools: activeSnapshotTools(loaded.snapshot.tools, "session"), resourceSelectors: snapshotResourcePolicy(loaded.snapshot, store.cwd, projectTrusted(ctx), workflowSettingsPath(extensionAgentDir)).effective, extensionSettings: loaded.snapshot.settings.extensionSettings, availableModels: new Set(loaded.snapshot.models), knownModels: new Set(loaded.snapshot.models), ...(loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases ? { modelAliases: loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases } : {}), ...(loaded.snapshot.settingsSources?.modelAliases ? { settingsPath: loaded.snapshot.settingsSources.modelAliases } : loaded.snapshot.settingsPath ? { settingsPath: loaded.snapshot.settingsPath } : {}), runStore: store, providerPause, agentResourcePolicy: frozenResourcePolicy(snapshotResourcePolicy(loaded.snapshot, store.cwd, projectTrusted(ctx), workflowSettingsPath(extensionAgentDir))) }), store, metadata: loaded.snapshot.metadata, model, lifecycle, budget: budgetRuntime, abortController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) });
-      for (const checkpoint of await store.awaitingCheckpoints()) deliver(pi, `Workflow ${loaded.snapshot.metadata.name} checkpoint ${checkpoint.name}: ${checkpoint.prompt}\nContext: ${JSON.stringify(checkpoint.context)}\nRespond with workflow_respond.`);
-      for (const decision of await store.pendingWorkflowDecisions()) deliver(pi, recovery.budgetDecisionDelivery(loaded.snapshot.metadata, decision));
+      for (const checkpoint of await store.awaitingCheckpoints()) deliver(pi, `Workflow ${loaded.snapshot.metadata.name} checkpoint ${checkpoint.name}: ${checkpoint.prompt}\nContext: ${JSON.stringify(checkpoint.context)}\nRespond with workflow_respond.`, !shuttingDown);
+      for (const decision of await store.pendingWorkflowDecisions()) deliver(pi, recovery.budgetDecisionDelivery(loaded.snapshot.metadata, decision), !shuttingDown);
       scheduler.restoreRun(runId, loaded.snapshot.settings.concurrency, loaded.snapshot.identityVersion === LAUNCH_SNAPSHOT_IDENTITY_VERSION ? await store.loadOwnership() : [], () => runs.get(runId)?.budget.checkAgentLaunch(), loaded.snapshot.settings.extensionSettings);
     }
     if (runIds.length > 0) getTrajectoryHost()?.autoAttach(trajectoryProvider, ctx);
@@ -1335,7 +1338,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
       }
       const lifecycle = lifecycleFor(store, "running", checked.metadata);
       const backgroundLaunch = !params.foreground;
-      const providerPause = async () => { if (!foregroundAttached) deliver(pi, `Workflow ${checked.metadata.name} paused: provider limit.`); await lifecycle.providerPause(); };
+      const providerPause = async () => { if (!foregroundAttached) deliver(pi, `Workflow ${checked.metadata.name} paused: provider limit.`, !shuttingDown); await lifecycle.providerPause(); };
       const providerErrorRecovery = createProviderErrorRecovery(ctx, availableModels, () => { runController.abort(); });
       const executor = createAgentExecutor({ ...executorRoot, runStore: store, providerPause, runContext });
       const runRecord: WorkflowRunRecord = { executor, store, metadata: checked.metadata, model: rootModel, lifecycle, budget: budgetRuntime, abortController: runController, foreground: foregroundAttached, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}), ...(params.foreground && onUpdate ? { update: onUpdate } : {}) };
@@ -1488,6 +1491,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
   pi.registerTool({ ...workflowTool, ...workflowToolExposure(workflowTool.name, codemodeTools) });
   registerWorkflowNavigator({ pi, home, clipboard, extensionAgentDir, runs, terminalRunStates, hardTerminalRunStates: HARD_TERMINAL_RUN_STATES, ensureSessionLease, coordinateRunMutation, answerCheckpoint, recovery, stopWorkflowRun, moveForegroundToBackground: deliveryController.moveForegroundToBackground, isForegroundAttached: deliveryController.isForegroundAttached, liveAgents, registry, projectTrusted, resumeHostContext, resumeSelectedWorkflow, reportBlocked: reportWorkflowBlocked, trajectoryProvider, setNavigatorOpen: (open) => { if (open) backgroundWidgetController.suspend(); else backgroundWidgetController.resume(); } });
   pi.on("session_shutdown", async () => {
+    shuttingDown = true;
     try {
       await Promise.all([...runs.entries()].map(async ([runId, run]) => {
         const isTerminal = SHUTDOWN_TERMINAL_RUN_STATES.has(run.lifecycle.state);

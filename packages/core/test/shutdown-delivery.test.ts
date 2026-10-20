@@ -6,16 +6,17 @@ import test from "node:test";
 import { testExtensionApi } from "./support.js";
 import workflowExtension, { RunStore } from "../src/index.js";
 
-void test("session shutdown waits for a settled run's terminal delivery before it resolves", async () => {
+void test("session shutdown waits for a settled run's terminal delivery before it resolves, and that delivery starts no turn", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-shutdown-delivery-"));
   const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
   const messages: string[] = [];
+  const triggerTurns: Array<boolean | undefined> = [];
   let shutdown: (() => Promise<void>) | undefined;
   workflowExtension(testExtensionApi({
     registerTool(tool: (typeof tools)[number]) { tools.push(tool); }, registerCommand() {},
     on(name: string, handler: unknown) { if (name === "session_shutdown") shutdown = handler as typeof shutdown; },
     getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"],
-    sendMessage(message: { content: string }) { messages.push(message.content); },
+    sendMessage(message: { content: string }, options?: { triggerTurn?: boolean }) { messages.push(message.content); triggerTurns.push(options?.triggerTurn); },
   }), home);
   const workflow = tools.find(({ name }) => name === "workflow");
   assert.ok(workflow && shutdown);
@@ -43,6 +44,7 @@ void test("session shutdown waits for a settled run's terminal delivery before i
     await closing;
     assert.equal(messages.length, 1, "the completion was delivered before shutdown resolved");
     assert.match(messages[0] ?? "", /"state":"completed"/);
+    assert.deepEqual(triggerTurns, [false], "a delivery made while the session shuts down starts no turn");
   } finally {
     release();
     RunStore.prototype.updateState = updateState;

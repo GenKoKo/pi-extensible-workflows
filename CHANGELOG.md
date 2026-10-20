@@ -7,6 +7,7 @@
 - Retention no longer stops with "Run inventory contains an unrecognized artifact" when it meets a `summary.json` that is being written. Only the exact temporary name that the atomic write uses is accepted.
 - Session shutdown waits for the terminal delivery of background runs that settled just before it, so a run's files are no longer removed while its delivery state is still being written.
 - A background run's terminal delivery that fails (a store write, reading the result) is reported as a workflow warning entry instead of an unhandled rejection that could end the Pi process. A delivery is still claimed before its content is sent, so a failure after the claim is not retried.
+- A workflow message delivered while the session shuts down (for example the result of a run that settled just before, or the failure of a run the shutdown interrupted) is still recorded in the session but no longer starts a turn in it.
 
 ### Trajectory fixes
 
