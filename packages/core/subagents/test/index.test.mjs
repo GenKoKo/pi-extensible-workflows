@@ -1374,7 +1374,7 @@ test("opens bounded prompt and result artifacts while terminal runs hide system 
   const editorPath = join(cwd, "fake-editor.sh");
   const editedPath = join(cwd, "edited-content");
   const openedPath = join(cwd, "opened-path");
-  await writeFile(editorPath, "#!/bin/sh\ncat \"$3\" > \"$1\"\nprintf '%s' \"$3\" > \"$2\"\n", { mode: 0o755 });
+  await writeFile(editorPath, "#!/bin/sh\nprintf '%s' \"$3\" > \"$2\"\ncat \"$3\" > \"$1\"\n", { mode: 0o755 });
   const previous = { VISUAL: process.env.VISUAL, EDITOR: process.env.EDITOR, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
   process.env.VISUAL = `${editorPath} ${editedPath} ${openedPath}`;
   process.env.EDITOR = process.env.VISUAL;
@@ -2037,6 +2037,8 @@ test("stopping one background subagent leaves another running", async () => {
     assert.equal((await manager.stop({ id: first.id }, context)).state, "stopped");
     await waitFor(async () => (await manager.inspect({ id: first.id }, context)).state === "stopped");
     assert.equal((await manager.inspect({ id: second.id }, context)).state, "running");
+    // A run reads "running" before its executor is called: wait for the executor before settling it.
+    await waitFor(() => pending.has("second"));
     pending.get("second").resolve({ value: "second result", attempts: [], cwd });
     await waitFor(async () => (await manager.inspect({ id: second.id }, context)).state === "completed");
     assert.equal((await manager.inspect({ id: second.id }, context)).value, "second result");
