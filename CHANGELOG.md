@@ -1,6 +1,10 @@
 # Changelog
 ## Unreleased
 
+### Fixes
+
+- `phase(name)` and the work a script starts right after it (a shell command, an agent) are recorded in order: work started after an unawaited `phase(name)` now belongs to that phase, not the previous one. A failed phase update still rejects `phase()` and does not stop later work.
+
 ## [6.2.2] - 2026-10-18
 
 ### Fixes
