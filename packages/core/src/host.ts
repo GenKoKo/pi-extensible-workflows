@@ -345,7 +345,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
   // Extension load failures a headless launcher reported for this host. They hold for the whole process, so every executor,
   // including those that paused resume, cold resume and retry create, keeps failing ownerless options closed.
   let extensionLoad: AgentExecutionRoot["extensionLoad"];
-  const deliveryController = new ForegroundDeliveryController({ runs, ...(typeof pi.sendMessage === "function" ? { deliver: (content: string) => { deliver(pi, content); } } : {}) });
+  const deliveryController = new ForegroundDeliveryController({ runs, warn: (content: string) => { deliverWarning(pi, content); }, ...(typeof pi.sendMessage === "function" ? { deliver: (content: string) => { deliver(pi, content); } } : {}) });
   let releaseWorkflowRegistry: (() => void) | undefined;
   const providerRecoveryLane = new SerialLane();
   const enqueueProviderRecovery = <T>(task: () => Promise<T>): Promise<T> => providerRecoveryLane.run(task);
@@ -1078,7 +1078,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     };
   };
   const recovery = createWorkflowRecovery({
-    pi, home, runs, scheduler, eventPublisher, persistRunState, projectTrusted, resumeHostContext, ensureSessionLease, coordinateRunMutation, createAgentExecutor, activeSnapshotTools, frozenResourcePolicy, resolveLaunchPrologue: resumeLaunchPrologue, workflowAgentHandler, shellForRun, toolForRun, resolveWorktree, checkpointBridge, phaseBridge, logBridge, lifecycleFor, createProviderErrorRecovery, cleanupTerminalRun, deliver: (content) => { deliver(pi, content); }, deliverTerminal: deliveryController.deliverTerminal, workflowToolUpdate, registry, modelSpec,
+    pi, home, runs, scheduler, eventPublisher, persistRunState, projectTrusted, resumeHostContext, ensureSessionLease, coordinateRunMutation, createAgentExecutor, activeSnapshotTools, frozenResourcePolicy, resolveLaunchPrologue: resumeLaunchPrologue, workflowAgentHandler, shellForRun, toolForRun, resolveWorktree, checkpointBridge, phaseBridge, logBridge, lifecycleFor, createProviderErrorRecovery, cleanupTerminalRun, deliver: (content) => { deliver(pi, content); }, deliverTerminal: deliveryController.deliverTerminal, trackDelivery: deliveryController.trackDelivery, workflowToolUpdate, registry, modelSpec,
   });
   const resumeSelectedWorkflow = async (runId: string, foreground: boolean, context: unknown, budgetPatch?: unknown): Promise<{ workflowName: string; state: "running" | "completed" | "awaiting_approval"; attached: boolean; value?: JsonValue }> => {
     const run = runs.get(runId);
@@ -1376,18 +1376,18 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
       type Completion = { value: JsonValue; resultPath: string; resultBytes: number };
       const completionContent = (mode: "foreground" | "background", result: Completion): (() => Promise<string>) => async () => (await completionDeliveryFromStore({ mode, name: checked.metadata.name, runId, value: result.value, resultPath: result.resultPath, resultBytes: result.resultBytes, store, context: completionContext(ctx) })).content;
       if (backgroundLaunch) {
-        void completion.then(async (result) => {
+        deliveryController.trackDelivery(completion.then(async (result) => {
           await deliveryController.deliverTerminal(store, completionContent("background", result));
         }, async (error: unknown) => {
           await deliveryController.deliverTerminal(store, deliverFailureContent(error), true);
-        });
+        }));
         return { content: [{ type: "text" as const, text: JSON.stringify({ runId, state: "running" }) }], details: { runId, preview: `Started workflow ${runId}.` }, structuredContent: { runId, state: "running" } };
       }
-      void completion.then(async (result) => {
+      deliveryController.trackDelivery(completion.then(async (result) => {
         await deliveryController.deliverDetachedTerminal(toolCallId, completionContent("background", result));
       }, async (error: unknown) => {
         await deliveryController.deliverDetachedTerminal(toolCallId, deliverFailureContent(error), true);
-      });
+      }));
       const outcome = detachedResult === undefined
         ? { kind: "completed" as const, result: await completion }
         : await Promise.race([
@@ -1500,6 +1500,8 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         await run.completion?.catch(() => undefined);
       }));
       await scheduler.flush();
+      // A run that settled before shutdown may still be writing its terminal delivery to its files.
+      await deliveryController.deliveriesSettled();
     } finally {
       await releaseSessionResources();
     }

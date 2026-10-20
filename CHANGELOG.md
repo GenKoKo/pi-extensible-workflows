@@ -5,6 +5,8 @@
 
 - A failed run releases its retry lineage before its `failed` state becomes visible, so a `workflow_retry` issued as soon as the state reads `failed` is no longer rejected with "An active retry already owns lineage".
 - Retention no longer stops with "Run inventory contains an unrecognized artifact" when it meets a `summary.json` that is being written. Only the exact temporary name that the atomic write uses is accepted.
+- Session shutdown waits for the terminal delivery of background runs that settled just before it, so a run's files are no longer removed while its delivery state is still being written.
+- A background run's terminal delivery that fails (a store write, reading the result) is reported as a workflow warning entry instead of an unhandled rejection that could end the Pi process. A delivery is still claimed before its content is sent, so a failure after the claim is not retried.
 
 ### Trajectory fixes
 
