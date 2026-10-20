@@ -471,6 +471,46 @@ void test("workflow_retry rejects concurrent children for one mutable retry line
   }
   throw new Error("Timed out waiting for the retry child to complete");
 });
+void test("workflow_retry accepts a retry issued as soon as the previous retry child reads failed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-retry-released-"));
+  let sessions = 0;
+  const createSession = async (): Promise<TestPiSession> => {
+    const attempt = ++sessions;
+    return { sessionId: `retry-released-${String(attempt)}`, sessionFile: `/sessions/retry-released-${String(attempt)}.jsonl`, messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }], getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }), prompt: async () => { if (attempt <= 2) throw new Error("failure"); }, steer: async () => {}, dispose() {} };
+  };
+  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
+  workflowExtension(testExtensionApi({ registerTool(tool: (typeof tools)[number]) { tools.push(tool); }, registerCommand() {}, on() {}, getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"] }), home, async () => {}, testTransport(createSession));
+  const workflow = tools.find(({ name }) => name === "workflow");
+  const retry = tools.find(({ name }) => name === "workflow_retry");
+  assert.ok(workflow && retry);
+  const context = { cwd: home, model: { provider: "openai", id: "gpt" }, sessionManager: { getSessionId: () => "session" } };
+  await assert.rejects(workflow.execute("source", { name: "released-source", script: `return agent("work");`, foreground: true }, new AbortController().signal, undefined, context), WorkflowError);
+  const sourceId = (await listRunIds(home, "session", home))[0];
+  assert.ok(sourceId);
+  // The child's failure record is held after its state already reads failed, so the retry below lands in that window.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let reached!: (runId: string) => void;
+  const failedChild = new Promise<string>((resolve) => { reached = resolve; });
+  const updateState = Object.getOwnPropertyDescriptor(RunStore.prototype, "updateState")?.value as RunStore["updateState"];
+  RunStore.prototype.updateState = function (this: RunStore, update) {
+    return updateState.call(this, async (current) => {
+      const next = await update(current);
+      if (this.cwd === home && this.runId !== sourceId && next.error !== undefined && current.error === undefined) { reached(this.runId); await gate; }
+      return next;
+    });
+  };
+  try {
+    await retry.execute("retry", { runId: sourceId, foreground: false }, undefined, undefined, context);
+    const childId = await failedChild;
+    assert.equal((await new RunStore(home, "session", childId, home).load()).run.state, "failed");
+    const again = decodeTestToolResult(await retry.execute("retry-again", { runId: childId, foreground: false }, undefined, undefined, context));
+    assert.equal(decodeTestRunStart(again.content[0]?.text ?? "null").parentRunId, childId);
+  } finally {
+    release();
+    RunStore.prototype.updateState = updateState;
+  }
+});
 void test("workflow_retry cleans up child startup when dynamic alias resolution fails", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-retry-alias-failure-"));
   let resolverCalls = 0;
