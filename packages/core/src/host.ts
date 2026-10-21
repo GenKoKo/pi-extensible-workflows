@@ -521,9 +521,36 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     const run = (await pending.store.load()).run;
     return { content: [{ type: "text" as const, text: serializeWorkflowFailureDiagnostics(pending.diagnostic) }], details: { ...pending.diagnostic, run }, isError: true };
   });
+  // Per run: the latest phase update, and the calls that entered the host but have not recorded their start yet. A call waits for
+  // the pending phase update, and a phase update waits for the calls entered before it to record (not finish), so every shell,
+  // tool call and agent lands in the phase that was current when the call was entered, for worker RPCs and registered functions alike.
+  const phaseOrders = new WeakMap<RunStore, { phase: Promise<void>; starting: Set<Promise<void>> }>();
+  const phaseOrder = (store: RunStore) => {
+    const order = phaseOrders.get(store) ?? { phase: Promise.resolve(), starting: new Set<Promise<void>>() };
+    phaseOrders.set(store, order);
+    return order;
+  };
+  /** Replaces `lifecycle.enter()` at the top of a call: registers synchronously, waits for earlier phase updates, and returns `registered` to call (idempotent) once the start is recorded. */
+  const enterCall = async (store: RunStore, lifecycle: RunLifecycle): Promise<() => void> => {
+    const order = phaseOrder(store);
+    let registered = () => undefined;
+    const starting = new Promise<void>((resolve) => { registered = () => { order.starting.delete(starting); resolve(); }; });
+    order.starting.add(starting);
+    await order.phase;
+    await lifecycle.enter().catch((error: unknown) => { registered(); throw error; });
+    return registered;
+  };
   const phaseBridge = (store: RunStore, metadata: WorkflowMetadata, lifecycle: RunLifecycle) => {
     let cursor = 0;
     return async (phase: string): Promise<void> => {
+      const order = phaseOrder(store);
+      const prior = order.phase;
+      const entered = [...order.starting];
+      const applied = (async () => { await prior; await Promise.all(entered); await applyPhase(phase); })();
+      order.phase = applied.then(() => undefined, () => undefined);
+      await applied;
+    };
+    async function applyPhase(phase: string): Promise<void> {
       await scheduler.flush(store.runId);
       await lifecycle.enter();
       try {
@@ -543,7 +570,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         await eventPublisher.phase(store, metadata, previousPhase, phase);
         runs.get(store.runId)?.update?.(workflowToolUpdate(persisted));
       } finally { await lifecycle.leave(); }
-    };
+    }
   };
   const persistWorktree = async (store: RunStore, metadata: WorkflowMetadata, owner: string): Promise<WorktreeReference> => {
     const existing = (await store.worktrees()).some((worktree) => worktree.owner === owner);
@@ -561,7 +588,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     } finally { await run.lifecycle.leave(); }
   };
   const shellForRun = async (store: RunStore, metadata: WorkflowMetadata, lifecycle: RunLifecycle, command: string, options: ShellOptions, signal: AbortSignal, identity: ShellIdentity): Promise<ShellResult> => {
-    await lifecycle.enter();
+    const registered = await enterCall(store, lifecycle);
     try {
       const path = shellIdentityPath(identity);
       const replayed = await store.replay(path);
@@ -583,6 +610,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         const activeShells = current.activeShells ?? 0;
         return { ...current, activeShells: activeShells + 1, ...(activeShells > 0 && current.activeShellStartedAt !== undefined ? {} : { activeShellStartedAt: shellStartedAt }), activeShellsByPhase: nextPhaseActivities };
       });
+      registered();
       runs.get(store.runId)?.update?.(workflowToolUpdate(withLiveActivities(started)));
       try {
         const cwd = identity.worktreeOwner ? (await persistWorktree(store, metadata, identity.worktreeOwner)).cwd : store.cwd;
@@ -612,11 +640,11 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         });
         runs.get(store.runId)?.update?.(workflowToolUpdate(withLiveActivities(stopped)));
       }
-    } finally { await lifecycle.leave(); }
+    } finally { registered(); await lifecycle.leave(); }
   };
   /** A script `tools.<id>(args)` call: replayed from the journal, otherwise run through the session's tool pipeline and journaled. */
   const toolForRun = async (store: RunStore, lifecycle: RunLifecycle, context: ExtensionToolContext | undefined, identifier: string, args: Readonly<Record<string, JsonValue>>, signal: AbortSignal, identity: ToolIdentity): Promise<JsonValue> => {
-    await lifecycle.enter();
+    const registered = await enterCall(store, lifecycle);
     try {
       const path = toolIdentityPath(identifier, args, identity);
       const replayed = await store.replay(path);
@@ -633,6 +661,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         const cancelled = (): boolean => signal.aborted;
         if (cancelled()) fail("CANCELLED", "Workflow cancelled");
         await record((run) => startScriptCall(run, { kind: "tool", name: tool.name, path, startedAt: Date.now() }));
+        registered();
         const finished = liveAgents.toolStarted(store.runId, tool.name);
         try {
           await render();
@@ -650,7 +679,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
       await record((run) => finishScriptCall(run, path));
       await render();
       return value;
-    } finally { await lifecycle.leave(); }
+    } finally { registered(); await lifecycle.leave(); }
   };
   const lifecycleFor = (store: RunStore, state: RunState, metadata: WorkflowMetadata) => new RunLifecycle(state, async (next, previous, reason) => {
     const run = runs.get(store.runId);
@@ -1044,7 +1073,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     // Replay lookup and spawn are serialised per run so concurrent agent(...) calls reach the scheduler in call order.
     const admission = new SerialLane();
     return async (prompt: string, options: Readonly<Record<string, JsonValue>>, agentSignal: AbortSignal, identity: AgentIdentity) => {
-      await lifecycle.enter();
+      const registered = await enterCall(store, lifecycle);
       try {
         const path = agentIdentityPath(identity);
         const admitted = await admission.run(async () => {
@@ -1068,6 +1097,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
           const continuity = identity.handle === undefined ? undefined : sessionPath ? "continued" as const : "fresh" as const;
           return { spawned: scheduler.spawn(runId, prompt, { label, ...(requestedLabel ? { requestedLabel } : {}), ...(identity.parentBreadcrumb ? { parentBreadcrumb: identity.parentBreadcrumb } : {}), cwd: agentCwd, tools, ...(skills ? { skills } : {}), ...(extensions ? { extensions } : {}), ...worktree, ...(model ? { model } : {}), ...(contextFiles ? { contextFiles } : {}), ...(schema ? { schema } : {}), ...(typeof options.retries === "number" ? { retries: options.retries } : {}), ...(positiveInteger(options.timeoutMs) || options.timeoutMs === null ? { timeoutMs: options.timeoutMs } : {}), ...(sessionPath ? { sessionPath } : {}), ...(continuity ? { continuity } : {}), agentOptions: options, agentIdentity: identity, configuration }) };
         });
+        registered();
         if ("replayed" in admitted) return admitted.replayed.value;
         const { spawned } = admitted;
         const cancel = () => { scheduler.cancel(spawned.id); };
@@ -1077,7 +1107,7 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         await store.complete(path, outcome.value);
         scheduler.releaseResult(spawned.id);
         return outcome.value;
-      } finally { await lifecycle.leave(); }
+      } finally { registered(); await lifecycle.leave(); }
     };
   };
   const recovery = createWorkflowRecovery({
