@@ -1,6 +1,7 @@
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { isAtomicTemporary } from "./io.js";
 import { HARD_TERMINAL_RUN_STATES, WorkflowError, type LaunchSnapshot, type WorkflowRetentionSettings } from "./types.js";
 import { acquireSessionLease, listPersistedSessionIds, listRunIds, RunStore, type BorrowedWorktreeBinding, type PersistedRun, type SessionLease } from "./persistence.js";
 
@@ -33,7 +34,7 @@ async function validateInventory(store: RunStore, loaded: { run: PersistedRun; s
       if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Run artifact is not a regular directory: ${join(store.directory, entry.name)}`);
       continue;
     }
-    if (!REQUIRED_FILES.has(entry.name) && !OPTIONAL_FILES.has(entry.name)) throw new Error(`Run inventory contains an unrecognized artifact: ${join(store.directory, entry.name)}`);
+    if (!REQUIRED_FILES.has(entry.name) && !OPTIONAL_FILES.has(entry.name) && !isAtomicTemporary(entry.name, "summary.json")) throw new Error(`Run inventory contains an unrecognized artifact: ${join(store.directory, entry.name)}`);
     if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Run artifact is not a regular file: ${join(store.directory, entry.name)}`);
   }
   for (const name of REQUIRED_FILES) {

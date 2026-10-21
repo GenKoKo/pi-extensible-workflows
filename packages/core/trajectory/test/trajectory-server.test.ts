@@ -920,6 +920,38 @@ function stateTitle(value: unknown): string | undefined {
   return typeof title === "string" ? title : undefined;
 }
 
+void test("Trajectory parses several complete frames delivered in one chunk larger than the frame limit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "trajectory-server-coalesced-"));
+  const port = await availablePort();
+  const maxFrameBytes = 1000;
+  const server = createTrajectoryServer(port, join(root, "trajectory.lock"), { maxFrameBytes });
+  const sides = serverSockets(server);
+  await listen(server, port);
+  const origin = `http://127.0.0.1:${String(port)}`;
+  const publisher = await handshake(port, origin);
+  const browser = await handshake(port, origin);
+  try {
+    const publisherSide = sides[0];
+    assert.ok(publisherSide);
+    browser.socket.write(maskedFrame(JSON.stringify({ type: "ui:attach" })));
+    await readJsonFrame(browser.socket);
+    const frames = [maskedFrame(JSON.stringify({ type: "publisher:attach", publisherId: "pub", padding: "p".repeat(150) })), maskedFrame(JSON.stringify({ type: "publisher:state", publisher: { id: "pub", title: "t".repeat(820) }, runs: [], subagents: [] }))];
+    const chunk = Buffer.concat(frames);
+    assert.ok(chunk.length > maxFrameBytes + 14);
+    for (const part of frames) assert.ok(part.length < maxFrameBytes);
+    publisherSide.emit("data", chunk);
+    const state = await readJsonFrame(browser.socket, (value) => stateTitle(value) !== undefined);
+    assert.equal(stateTitle(state), "t".repeat(820));
+  } finally {
+    publisher.socket.destroy();
+    browser.socket.destroy();
+    server.closeAllConnections();
+    server.close();
+    server.unref();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 void test("Trajectory assembles WebSocket frames split across arbitrary chunk boundaries", async () => {
   const root = await mkdtemp(join(tmpdir(), "trajectory-server-chunks-"));
   const port = await availablePort();
