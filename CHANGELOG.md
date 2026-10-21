@@ -1,6 +1,10 @@
 # Changelog
 ## Unreleased
 
+### CLI
+
+- `piewf --version` (`-v`) prints the CLI version, and `piewf --help` (`-h`, `help`) prints structured help with the commands and global options. Every command, including `inspect` and `transcript`, answers `--help`. With no arguments `piewf` prints the help on stderr, and with an unknown command `Unknown command: <name>` followed by the help, instead of the one-line usage on stdout; the exit code stays 1.
+
 ### Fixes
 
 - A failed run releases its retry lineage before its `failed` state becomes visible, so a `workflow_retry` issued as soon as the state reads `failed` is no longer rejected with "An active retry already owns lineage".
