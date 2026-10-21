@@ -938,10 +938,12 @@ void test("Trajectory assembles WebSocket frames split across arbitrary chunk bo
     const title = "t".repeat(70_000);
     const stream = Buffer.concat([maskedFrame(attach), maskedControlFrame(0x9, JSON.stringify({ ping: "one" })), maskedControlFrame(0xA, "ignored"), maskedFrame(publisherState("pub", "", [], title)), maskedControlFrame(0x9, JSON.stringify({ ping: "two" }))]);
     assert.ok(Buffer.byteLength(attach) > 125 && Buffer.byteLength(attach) <= 0xffff);
+    // A socket drops data while no reader is attached, so the browser listens before the publisher's frames are emitted.
+    const browserState = readJsonFrame(browser.socket, (value) => stateTitle(value) !== undefined);
     for (const chunk of splitIrregularly(stream)) publisherSide.emit("data", chunk);
     assert.deepEqual(await readJsonFrame(publisher.socket), { ping: "one" });
     assert.deepEqual(await readJsonFrame(publisher.socket), { ping: "two" });
-    assert.equal(stateTitle(await readJsonFrame(browser.socket, (value) => stateTitle(value) !== undefined)), title);
+    assert.equal(stateTitle(await browserState), title);
   } finally {
     publisher.socket.destroy();
     browser.socket.destroy();
