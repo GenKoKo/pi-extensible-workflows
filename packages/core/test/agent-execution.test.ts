@@ -797,6 +797,26 @@ void test("recovers a terminal provider error thrown by prompt before disposing 
   assert.equal(disposals, 1);
   assert.deepEqual(result.attempts.map(({ attempt, session }) => ({ attempt, sessionId: session?.sessionId })), [{ attempt: 1, sessionId: "thrown-provider" }]);
 });
+void test("a cancel while the provider-error recovery is still asking ends the attempt without an answer", async () => {
+  const messages: Array<{ role: string; content: unknown; stopReason?: string; errorMessage?: string; usage?: typeof usage }> = [terminalAssistant("PROVIDER_DOWN")];
+  let disposals = 0;
+  let asked!: () => void;
+  const recoveryAsked = new Promise<void>((resolve) => { asked = resolve; });
+  const executor = new WorkflowAgentExecutor(root, testTransport(async () => ({
+    transport: "local", session: { transport: "local", sessionId: "recovery-cancel", locator: { sessionFile: "/sessions/recovery-cancel.jsonl" } }, messages, getSessionStats: sessionStats,
+    async prompt() {},
+    async abort() {},
+    dispose() { disposals += 1; },
+  })));
+  const controller = new AbortController();
+  // The dialog of a person who does not answer: only the cancel can end the attempt.
+  const execution = executor.execute("work", { label: "worker", workflowName: "flow", providerErrorRecovery: async () => { asked(); return await new Promise<never>(() => { /* never answered */ }); } }, controller.signal);
+  await recoveryAsked;
+  controller.abort();
+  const settled = await Promise.race([execution.then(() => "resolved", (error: unknown) => error instanceof WorkflowError ? error.code : "rejected"), new Promise((resolve) => setTimeout(() => { resolve("still waiting"); }, 2_000))]);
+  assert.equal(settled, "CANCELLED");
+  assert.equal(disposals, 1);
+});
 void test("keeps an accepted structured result when same-session continuation aborts its prompt", async () => {
   const messages: Array<{ role: string; content: unknown; stopReason?: string; errorMessage?: string; usage?: typeof usage }> = [terminalAssistant("TRANSIENT_PROVIDER_ERROR")];
   let prompts = 0;

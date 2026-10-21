@@ -363,13 +363,13 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
     const select = uiCapabilities?.select;
     if (!select) return undefined;
     const hostModels = contextHostCapabilities(host).modelRegistry;
-    const choose = (title: string, options: string[]) => select.call(ui, title, options);
-    const chooseModel = async (failure: AgentProviderFailure): Promise<string | undefined> => {
+    const choose = (title: string, options: string[], signal: AbortSignal) => select.call(ui, title, options, { signal });
+    const chooseModel = async (failure: AgentProviderFailure, signal: AbortSignal): Promise<string | undefined> => {
       const custom = uiCapabilities.custom;
       const getAvailable = hostModels?.getAvailable;
       if (!custom || !getAvailable) {
         const available = getAvailable ? getAvailable().map((model) => `${model.provider}/${model.id}`) : [...fallbackModels];
-        return choose(`Available models for subagent "${failure.label}"`, [...new Set(available)].sort());
+        return choose(`Available models for subagent "${failure.label}"`, [...new Set(available)].sort(), signal);
       }
       const available = getAvailable();
       const current = hostModels.find?.(failure.provider, failure.model) ?? available.find((model) => model.provider === failure.provider && model.id === failure.model);
@@ -383,16 +383,28 @@ export default function workflowExtension(pi: WorkflowExtensionAPI, home?: strin
         getModel: (provider: string, model: string) => hostModels.find?.(provider, model) ?? getAvailable().find((candidate) => candidate.provider === provider && candidate.id === model),
         getError: () => hostModels.getError?.(),
       };
-      return await custom.call(ui, (tui, _theme, _keybindings, done) => new ModelSelectorComponent(tui, current, runtime as ModelRuntime, [], (model) => { done(`${model.provider}/${model.id}`); }, () => { done(undefined); })) as string | undefined;
+      // custom() takes no signal, but its done closes the picker; Pi disposes only a picker it has shown, so a cancel disposes it too.
+      return await custom.call(ui, (tui, _theme, _keybindings, done) => {
+        const finish = (result: string | undefined): void => { signal.removeEventListener("abort", onAbort); done(result); };
+        const picker = new ModelSelectorComponent(tui, current, runtime as ModelRuntime, [], (model) => { finish(`${model.provider}/${model.id}`); }, () => { finish(undefined); });
+        const onAbort = (): void => { done(undefined); picker.dispose(); };
+        if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
+        return picker;
+      }) as string | undefined;
     };
-    return (failure: AgentProviderFailure): Promise<AgentProviderRecovery> => enqueueProviderRecovery(async () => {
+    return (failure: AgentProviderFailure, signal: AbortSignal): Promise<AgentProviderRecovery> => enqueueProviderRecovery(async () => {
+      // A cancelled attempt no longer waits for an answer: its dialog closes, or is not shown, and the next failure gets the lane.
+      const cancelled = (): boolean => signal.aborted;
+      if (cancelled()) return "abort";
       reportWorkflowBlocked(true, `Subagent "${failure.label}" failed`);
       try {
         for (;;) {
-          const action = await choose(`Subagent "${failure.label}" failed\nCurrent provider/model: ${failure.provider}/${failure.model}\nProvider error: ${failure.error}\nChoose what to do`, ["Retry", "Change model", "Abort workflow"]);
+          const action = await choose(`Subagent "${failure.label}" failed\nCurrent provider/model: ${failure.provider}/${failure.model}\nProvider error: ${failure.error}\nChoose what to do`, ["Retry", "Change model", "Abort workflow"], signal);
+          if (cancelled()) return "abort";
           if (action === "Retry") return "retry";
           if (action === "Change model") {
-            const selected = await chooseModel(failure);
+            const selected = await chooseModel(failure, signal);
+            if (cancelled()) return "abort";
             if (selected) return { model: selected };
             continue;
           }
