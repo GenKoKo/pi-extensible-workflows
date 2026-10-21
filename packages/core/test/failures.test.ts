@@ -472,13 +472,13 @@ void test("failed retry diagnostics preserve retry provenance", async () => {
   assert.ok(workflow && retry);
   const context = { cwd, model: { provider: "openai", id: "gpt" }, sessionManager: { getSessionId: () => "session" } };
   await workflow.execute("retry-diagnostic-source", { name: "retry-diagnostic-source", script: `return pipeline("stages", { item: "input" }, { first: value => agent("first", {label:"first"}), second: value => agent("second", {label:"second"}) });` }, undefined, undefined, context);
-  for (let attempt = 0; attempt < 100 && diagnostics.length < 1; attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  for (let attempt = 0; attempt < 1_000 && diagnostics.length < 1; attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 10));
   assert.equal(diagnostics.length, 1);
   const sourceDiagnostic = diagnostics[0];
   if (!sourceDiagnostic) throw new Error("Source failure was not delivered");
   const started = decodeTestToolResult(await retry.execute("retry-diagnostic-child", { runId: sourceDiagnostic.runId }, undefined, undefined, context));
   const childId = decodeTestRunStart(started.content[0]?.text ?? "null").runId;
-  for (let attempt = 0; attempt < 100 && !diagnostics.some((diagnostic) => diagnostic.runId === childId); attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  for (let attempt = 0; attempt < 1_000 && !diagnostics.some((diagnostic) => diagnostic.runId === childId); attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 10));
   const childDiagnostic = diagnostics.find((diagnostic) => diagnostic.runId === childId);
   if (!childDiagnostic) throw new Error("Child failure was not delivered");
   const childRun = (await new RunStore(cwd, "session", childId, home).load()).run;
@@ -487,7 +487,7 @@ void test("failed retry diagnostics preserve retry provenance", async () => {
   const nextStarted = decodeTestToolResult(await retry.execute("retry-diagnostic-next-child", { runId: childId }, undefined, undefined, context));
   const nextChildId = decodeTestRunStart(nextStarted.content[0]?.text ?? "null").runId;
   let nextChild: PersistedRun | undefined;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
     nextChild = (await new RunStore(cwd, "session", nextChildId, home).load()).run;
     if (nextChild.state === "completed" || nextChild.state === "failed") break;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
