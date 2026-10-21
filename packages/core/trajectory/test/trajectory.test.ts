@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1284,6 +1284,16 @@ void test("trajectory run loaders serve cached runs until state, journal, or tra
     await store.updateState((current) => ({ ...current, phase: "second" }));
     assert.equal((await loadRuns())[0]?.run.phase, "second", "a state.json change invalidates the run cache");
     assert.equal((await loadMetadata())[0]?.run.phase, "second", "a state.json change invalidates the metadata cache");
+    // Two writes inside one filesystem timestamp tick leave the same mtime; each atomic write still replaces the file.
+    const statePath = join(store.directory, "state.json");
+    const tick = new Date(Math.floor(statSync(statePath).mtimeMs));
+    utimesSync(statePath, tick, tick);
+    assert.equal((await loadRuns())[0]?.run.phase, "second");
+    assert.equal((await loadMetadata())[0]?.run.phase, "second");
+    await store.updateState((current) => ({ ...current, phase: "third" }));
+    utimesSync(statePath, tick, tick);
+    assert.equal((await loadRuns())[0]?.run.phase, "third", "a state.json rewrite with the same mtime invalidates the run cache");
+    assert.equal((await loadMetadata())[0]?.run.phase, "third", "a state.json rewrite with the same mtime invalidates the metadata cache");
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     writeFileSync(sessionFile, `${readFileSync(sessionFile, "utf8")}${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "two" }] } })}\n`);
@@ -1291,7 +1301,7 @@ void test("trajectory run loaders serve cached runs until state, journal, or tra
     assert.notEqual((await loadMetadata())[0]?.transcripts.agent?.revision, firstRevision, "a transcript change invalidates the metadata cache");
 
     await store.complete("agent/callsite:x/occurrence:1", "done");
-    assert.equal((await loadRuns())[0]?.run.phase, "second", "a journal change reloads without losing state");
+    assert.equal((await loadRuns())[0]?.run.phase, "third", "a journal change reloads without losing state");
     await store.delete(true);
     assert.deepEqual(await loadRuns(), [], "a removed run leaves the cache");
     assert.deepEqual(await loadMetadata(), []);

@@ -16,6 +16,7 @@
 
 ### Trajectory fixes
 
+- Trajectory no longer keeps showing a stale run, for example a finished run as still running, when a run's `state.json` or `journal.json` was written while it was being read or twice within one filesystem timestamp tick. The run cache now stamps those files by inode, modification time and size before it reads them.
 - The Trajectory server no longer drops a publisher whose TCP chunk carries several complete WebSocket frames that together exceed the frame limit. Only the unfinished frame left after parsing is bounded, and an oversized receive buffer is trimmed after each chunk.
 
 ## [6.2.2] - 2026-10-18
