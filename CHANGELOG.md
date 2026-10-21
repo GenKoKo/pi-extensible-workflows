@@ -8,6 +8,7 @@
 - Session shutdown waits for the terminal delivery of background runs that settled just before it, so a run's files are no longer removed while its delivery state is still being written.
 - A background run's terminal delivery that fails (a store write, reading the result) is reported as a workflow warning entry instead of an unhandled rejection that could end the Pi process. A delivery is still claimed before its content is sent, so a failure after the claim is not retried.
 - A workflow message delivered while the session shuts down (for example the result of a run that settled just before, or the failure of a run the shutdown interrupted) is still recorded in the session but no longer starts a turn in it.
+- `phase(name)` and the work a script starts right after it (a shell command, an agent) are recorded in order: work started after an unawaited `phase(name)` now belongs to that phase, not the previous one. A failed phase update still rejects `phase()` and does not stop later work.
 
 ### Trajectory fixes
 
