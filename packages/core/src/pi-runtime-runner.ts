@@ -143,6 +143,15 @@ async function withTimeout(work: Promise<{ assistant?: WorkflowAgentMessage }>, 
   }
 }
 
+/** `work`, or a rejection as soon as `signal` aborts; `work` itself is left to settle on its own. */
+async function untilCancelled<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new WorkflowError("CANCELLED", "Agent cancelled");
+  let abort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_, reject) => { abort = () => { reject(new WorkflowError("CANCELLED", "Agent cancelled")); }; signal.addEventListener("abort", abort, { once: true }); });
+  try { return await Promise.race([work, cancelled]); }
+  finally { if (abort) signal.removeEventListener("abort", abort); }
+}
+
 async function promptWithProviderPause(session: WorkflowAgentSession, textValue: string, timeoutMs: number | null | undefined, started: number, request: Readonly<RuntimeAgentRunRequest>): Promise<{ assistant?: WorkflowAgentMessage }> {
   const promptTimeout = remaining(timeoutMs, started);
   for (;;) {
@@ -319,8 +328,12 @@ export class PiRuntimeAgentRunner implements RuntimeAgentRunner {
           if (!failure) return continued;
           if (!request.onProviderError) throw new RuntimeAgentProviderError(failure, undefined, false);
           let recovery: RuntimeAgentProviderRecovery;
-          try { recovery = await request.onProviderError(failure); }
-          catch (error) { throw new RuntimeAgentProviderError({ ...failure, error: `${failure.error} (provider recovery failed: ${errorText(error)})` }, undefined, true); }
+          // The recovery asks a person, who may never answer: a cancel ends the attempt without the answer.
+          try { throwIfCancelled(); recovery = await untilCancelled(request.onProviderError(failure), request.signal); }
+          catch (error) {
+            if (request.signal.aborted) throw new WorkflowError("CANCELLED", "Agent cancelled");
+            throw new RuntimeAgentProviderError({ ...failure, error: `${failure.error} (provider recovery failed: ${errorText(error)})` }, undefined, true);
+          }
           if (recovery !== "retry") throw new RuntimeAgentProviderError(failure, recovery, true);
           continued = true;
           try { await promptOnce(providerContinuationPrompt); }

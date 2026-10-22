@@ -81,7 +81,8 @@ export interface AgentExecutionOptions {
   model?: string;
   onProgress?: (progress: AgentProgress) => void | Promise<void>;
   onAttempt?: (attempt: AgentAttempt) => void | Promise<void>;
-  providerErrorRecovery?: (failure: AgentProviderFailure) => Promise<AgentProviderRecovery>;
+  /** Asks how to recover from a terminal provider error; `signal` aborts when the attempt is cancelled while it asks. */
+  providerErrorRecovery?: (failure: AgentProviderFailure, signal: AbortSignal) => Promise<AgentProviderRecovery>;
   modelOverride?: ModelSpec;
   tools?: readonly string[];
   skills?: readonly string[];
@@ -1319,7 +1320,7 @@ export class WorkflowAgentExecutor {
               return requestInstruction && !final ? options.budget?.instruction() : undefined;
             },
           } } : {}),
-          ...(providerRecovery ? { onProviderError: (failure: { provider: string; model: string; error: string }) => providerRecovery({ label: options.label, ...failure }) } : {}),
+          ...(providerRecovery ? { onProviderError: (failure: { provider: string; model: string; error: string }) => providerRecovery({ label: options.label, ...failure }, attemptSignal) } : {}),
           ...(this.root.providerPause ? { onProviderLimit: this.root.providerPause } : {}),
         } as const;
         const result = await runner.run(runtimeRequest);

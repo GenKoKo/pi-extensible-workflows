@@ -15,7 +15,7 @@ import { type WorkflowRunRecord } from "./host-runtime.js";
 import { getTrajectoryHost, type TrajectoryPublisherProvider } from "./trajectory-host-handle.js";
 import { type AgentAttemptAction, type AgentAttemptActionContext, type AgentAttemptSummary, type AgentRecord, type HardTerminalRunState, type JsonValue, type LaunchSnapshot, type LiveSessionHandoff, type PreparedAgentSession, type WorkflowAgentSession } from "./types.js";
 
-type UiSelect = (title: string, options: string[]) => Promise<string | undefined>;
+type UiSelect = (title: string, options: string[], opts?: { signal?: AbortSignal }) => Promise<string | undefined>;
 type UiInput = (title: string, placeholder?: string) => Promise<string | undefined>;
 type UiSetStatus = (key: string, text?: string) => void;
 type UiCustom = ExtensionUIContext["custom"];

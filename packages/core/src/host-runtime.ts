@@ -23,7 +23,7 @@ export type WorkflowRunRecord = {
   budget: WorkflowBudgetRuntime;
   abortController: AbortController;
   projectTrusted: () => boolean;
-  providerErrorRecovery?: (failure: AgentProviderFailure) => Promise<AgentProviderRecovery>;
+  providerErrorRecovery?: (failure: AgentProviderFailure, signal: AbortSignal) => Promise<AgentProviderRecovery>;
   execution?: WorkflowExecution;
   completion?: Promise<unknown>;
   foreground?: boolean;

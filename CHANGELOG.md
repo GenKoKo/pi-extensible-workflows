@@ -7,6 +7,7 @@
 
 ### Fixes
 
+- Stopping a run (`workflow_stop`, `/workflow`) while one of its agents waits on the provider error dialog (Retry, Change model, Abort workflow) no longer waits for an answer: the attempt ends as cancelled and the dialog closes, as does Pi's searchable model picker opened from "Change model", so the next agent's provider error dialog is no longer held behind it.
 - A failed run releases its retry lineage before its `failed` state becomes visible, so a `workflow_retry` issued as soon as the state reads `failed` is no longer rejected with "An active retry already owns lineage".
 - Retention no longer stops with "Run inventory contains an unrecognized artifact" when it meets a `summary.json` that is being written. Only the exact temporary name that the atomic write uses is accepted.
 - Session shutdown waits for the terminal delivery of background runs that settled just before it, so a run's files are no longer removed while its delivery state is still being written.

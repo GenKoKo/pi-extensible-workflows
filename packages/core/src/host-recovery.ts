@@ -37,7 +37,7 @@ export type WorkflowRecoveryDependencies = {
   phaseBridge: (store: RunStore, metadata: WorkflowMetadata, lifecycle: RunLifecycle) => (phase: string) => Promise<void>;
   logBridge: (store: RunStore, lifecycle: RunLifecycle, workflowName: string) => (message: string) => Promise<void>;
   lifecycleFor: (store: RunStore, state: RunState, metadata: WorkflowMetadata) => RunLifecycle;
-  createProviderErrorRecovery: (host: unknown, fallbackModels: ReadonlySet<string>, abort: () => void) => ((failure: AgentProviderFailure) => Promise<AgentProviderRecovery>) | undefined;
+  createProviderErrorRecovery: (host: unknown, fallbackModels: ReadonlySet<string>, abort: () => void) => ((failure: AgentProviderFailure, signal: AbortSignal) => Promise<AgentProviderRecovery>) | undefined;
   cleanupTerminalRun: (runId: string) => Promise<void>;
   deliver: (content: string) => void;
   deliverTerminal: (store: RunStore, content: string | (() => string | Promise<string>), failure?: boolean) => Promise<void>;

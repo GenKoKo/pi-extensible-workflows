@@ -106,6 +106,38 @@ void test("TUI terminal provider recovery shows factual failure and retries with
     await shutdown?.();
   }
 });
+void test("workflow_stop ends a run whose agent waits on the provider recovery dialog, and closes the dialog", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-provider-recovery-stop-"));
+  let shutdown: (() => Promise<void>) | undefined;
+  const createSession = async (): Promise<TestPiSession> => ({ sessionId: "recovery-stop", sessionFile: "/sessions/recovery-stop.jsonl", messages: [{ role: "assistant", content: [{ type: "text", text: "" }], stopReason: "error", errorMessage: "fetch failed" }], getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }), prompt: async () => {}, steer: async () => {}, abort: async () => {}, dispose() {} });
+  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
+  workflowExtension(testExtensionApi({ registerTool(tool: (typeof tools)[number]) { tools.push(tool); }, registerCommand() {}, on(name: string, handler: unknown) { if (name === "session_shutdown") shutdown = handler as typeof shutdown; }, sendMessage() {}, getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"] }), home, async () => {}, testTransport(createSession));
+  const workflow = tools.find(({ name }) => name === "workflow");
+  const stop = tools.find(({ name }) => name === "workflow_stop");
+  assert.ok(workflow && stop);
+  let dialogSignal: AbortSignal | undefined;
+  let asked!: () => void;
+  const dialogShown = new Promise<void>((resolve) => { asked = resolve; });
+  // A person who does not answer: the dialog settles only when its signal aborts, as Pi's select does.
+  const select = (_title: string, _options: string[], opts?: { signal?: AbortSignal }): Promise<string | undefined> => new Promise((resolve) => {
+    dialogSignal = opts?.signal;
+    asked();
+    opts?.signal?.addEventListener("abort", () => { resolve(undefined); }, { once: true });
+  });
+  const context = { cwd: home, mode: "tui", hasUI: true, model: { provider: "openai", id: "gpt" }, sessionManager: { getSessionId: () => "session" }, ui: { select } };
+  try {
+    await workflow.execute("id", { name: "provider-recovery-stop", script: "return await agent('work', {label:'worker'});", foreground: false }, new AbortController().signal, undefined, context);
+    await dialogShown;
+    const runId = (await listRunIds(home, "session", home))[0];
+    assert.ok(runId);
+    const stopped = await Promise.race([stop.execute("id", { runId }), new Promise((resolve) => setTimeout(() => { resolve("still stopping"); }, 2_000))]);
+    assert.notEqual(stopped, "still stopping");
+    assert.equal((JSON.parse((stopped as { content: [{ text: string }] }).content[0].text) as { state: string }).state, "stopped");
+    assert.equal(dialogSignal?.aborted, true, "the dialog is closed by the stop");
+  } finally {
+    await shutdown?.();
+  }
+});
 void test("TUI terminal provider recovery changes model before a fresh attempt", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-provider-recovery-model-"));
   let sessions = 0;
@@ -165,6 +197,54 @@ void test("the searchable recovery model picker constructs against the installed
     const result = await workflow.execute("id", { name: "provider-recovery-model-picker", script: "return await agent('work', {label:'worker'});", foreground: true }, new AbortController().signal, undefined, context) as { details?: { value?: unknown } };
     assert.equal(result.details?.value, "done");
     assert.deepEqual(inputs.map(({ model }) => `${model.provider}/${model.model}`), ["openai/gpt", "anthropic/opus"]);
+  } finally {
+    await shutdown?.();
+  }
+});
+void test("workflow_stop closes the recovery model picker, so the recovery lane is free", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-provider-recovery-picker-stop-"));
+  let shutdown: (() => Promise<void>) | undefined;
+  let sessions = 0;
+  const createSession = async (): Promise<TestPiSession> => ({ sessionId: `recovery-picker-stop-${String(++sessions)}`, sessionFile: `/sessions/recovery-picker-stop-${String(sessions)}.jsonl`, messages: [{ role: "assistant", content: [{ type: "text", text: "" }], stopReason: "error", errorMessage: "fetch failed" }], getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }), prompt: async () => {}, steer: async () => {}, abort: async () => {}, dispose() {} });
+  const blocked: boolean[] = [];
+  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
+  workflowExtension(testExtensionApi({ registerTool(tool: (typeof tools)[number]) { tools.push(tool); }, registerCommand() {}, on(name: string, handler: unknown) { if (name === "session_shutdown") shutdown = handler as typeof shutdown; }, sendMessage() {}, getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"], events: { emit(channel: string, data: unknown) { if (channel === WORKFLOW_BLOCKED_EVENT) blocked.push((data as { active: boolean }).active); } } }), home, async () => {}, testTransport(createSession));
+  const workflow = tools.find(({ name }) => name === "workflow");
+  const stop = tools.find(({ name }) => name === "workflow_stop");
+  assert.ok(workflow && stop);
+  const models = [{ provider: "openai", id: "gpt", name: "GPT" }];
+  let doneCalls = 0;
+  let pickerShown!: () => void;
+  const picker = new Promise<void>((resolve) => { pickerShown = resolve; });
+  let nextDialogShown!: () => void;
+  const nextDialog = new Promise<void>((resolve) => { nextDialogShown = resolve; });
+  const context = { cwd: home, mode: "tui", hasUI: true, model: models[0], modelRegistry: { getAvailable: () => models }, sessionManager: { getSessionId: () => "session" }, ui: {
+    // The first agent opens the picker; the next agent's dialog settles only when its signal aborts, as Pi's select does.
+    select: (title: string, _options: string[], opts?: { signal?: AbortSignal }): Promise<string | undefined> => {
+      if (title.startsWith("Subagent \"picker\"")) return Promise.resolve("Change model");
+      nextDialogShown();
+      return new Promise((resolve) => { opts?.signal?.addEventListener("abort", () => { resolve(undefined); }, { once: true }); });
+    },
+    // Pi's custom() takes no signal: the picker closes only when the factory's done is called.
+    custom: (factory: (tui: unknown, theme: undefined, keybindings: undefined, done: (value: unknown) => void) => unknown) => new Promise((resolve) => {
+      initTheme("dark", false);
+      factory({ requestRender() {} }, undefined, undefined, (value) => { doneCalls += 1; resolve(value); });
+      pickerShown();
+    }),
+  } };
+  try {
+    await workflow.execute("id", { name: "provider-recovery-picker-stop", script: "return await agent('work', {label:'picker'});", foreground: false }, new AbortController().signal, undefined, context);
+    await picker;
+    const runId = (await listRunIds(home, "session", home))[0];
+    assert.ok(runId);
+    const stopped = await Promise.race([stop.execute("id", { runId }), new Promise((resolve) => setTimeout(() => { resolve("still stopping"); }, 2_000))]);
+    assert.notEqual(stopped, "still stopping");
+    assert.equal((JSON.parse((stopped as { content: [{ text: string }] }).content[0].text) as { state: string }).state, "stopped");
+    await workflow.execute("id", { name: "provider-recovery-next", script: "return await agent('work', {label:'next'});", foreground: false }, new AbortController().signal, undefined, context);
+    const lane = await Promise.race([nextDialog.then(() => "shown"), new Promise((resolve) => setTimeout(() => { resolve("held by the stopped run's picker"); }, 2_000))]);
+    assert.equal(lane, "shown", "the next failure's dialog is shown");
+    assert.equal(doneCalls, 1, "the stop closes the picker");
+    assert.deepEqual(blocked, [true, false, true]);
   } finally {
     await shutdown?.();
   }
