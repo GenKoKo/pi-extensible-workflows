@@ -280,6 +280,21 @@ void test("workflow launches from a script file and snapshots its exact source",
   assert.deepEqual(loaded.snapshot.args, { value: "from-file" });
   assert.equal(readFileSync(join(store.directory, "workflow.js"), "utf8"), script);
 });
+void test("a workflow longer than any platform's command line launches with its exact source and args", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-large-launch-"));
+  // NOTE: over 1 MiB each, past Windows' 32,767-character command line, Linux's 128 KiB argument and macOS's 1 MiB argument space.
+  // Quotes, backslashes and newlines grow the most when quoted for a command line; the emoji checks the UTF-8 round trip.
+  const text = "say \"héllo\" \\ \u{1F642}\n".repeat(65_536);
+  const script = `export const meta={name:'large-launch'}; return args.text === ${JSON.stringify(text)} ? args.text.length : 'mismatch';`;
+  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
+  workflowExtension(testExtensionApi({ registerTool(tool: (typeof tools)[number]) { tools.push(tool); }, registerCommand() {}, on() {}, getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"] }), home);
+  const workflow = tools.find(({ name }) => name === "workflow");
+  assert.ok(workflow);
+  const result = decodeTestToolResult(await workflow.execute("large", { name: "large-launch", script, args: { text }, foreground: true }, new AbortController().signal, undefined, { cwd: home, model: { provider: "openai", id: "gpt", contextWindow: 1_000_000, maxTokens: 1_000 }, getContextUsage: () => ({ tokens: 0, contextWindow: 1_000_000 }), sessionManager: { getSessionId: () => "session" } }));
+  assert.equal(result.content[0]?.text, String(text.length));
+  const loaded = await new RunStore(home, "session", decodeTestRunDetails(result.details).runId, home).load();
+  assert.equal(loaded.run.state, "completed");
+});
 void test("workflow_retry links children, replays parallel branches, inherits budgets, and supports retry chains", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-retry-tool-"));
   let sessions = 0;

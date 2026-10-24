@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import { decodeOwnershipRecords } from "../src/decoders.js";
 const capabilities = {
   models: new Set(["openai/gpt"]), tools: new Set(["read"]),
 };
+const linux = { skip: process.platform === "linux" ? false : "needs /proc" };
 
 void test("persisted opaque role options remain extension-owned JSON", () => {
   const entries = decodeOwnershipRecords([{ id: "owner", label: "owner", state: "completed", options: { label: "owner", cwd: "/repo", tools: [], agentOptions: { role: { name: "reviewer" } } } }]);
@@ -376,6 +377,31 @@ void test("permission-sandboxed child cannot read files, reach network, or spawn
   const hostile = runWorkflow(`export const meta={name:'hostile',description:'hostile'}; try { const fs = globalThis.constructor.constructor('return require("node:fs")')(); return fs.readFileSync('/etc/hostname','utf8'); } catch(e) { return 'blocked:'+e.code; }`);
   const result = await hostile.result as string;
   assert.match(result, /blocked:/);
+});
+
+void test("workflow source and args stay out of the worker's command line, which any local user can read", linux, async () => {
+  const marker = `argv-marker-${String(process.pid)}-${String(Date.now())}`;
+  const run = runWorkflow(`await new Promise(() => {});`, { marker });
+  const workerCommandLines = (): string[] => readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).flatMap((pid) => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const ppid = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1];
+      const commandLine = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      return ppid === String(process.pid) && commandLine.includes("child.cjs") ? [commandLine] : [];
+    } catch { return []; }
+  });
+  try {
+    let commandLines = workerCommandLines();
+    for (let attempt = 0; commandLines.length === 0 && attempt < 100; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      commandLines = workerCommandLines();
+    }
+    assert.equal(commandLines.length, 1);
+    assert.ok(!commandLines[0]?.includes(marker), "the worker's command line exposes workflow args");
+  } finally {
+    run.cancel();
+    await run.result.catch(() => undefined);
+  }
 });
 
 void test("workflow workers support a symlinked temporary directory", async () => {

@@ -50,7 +50,7 @@ const childSource = String.raw`
 const { AsyncLocalStorage } = require("node:async_hooks");
 const vm = require("node:vm");
 const LIMIT = parseInt(process.argv[2], 10);
-const config = JSON.parse(process.argv[3]);
+const config = JSON.parse(require("node:fs").readFileSync(process.argv[3], "utf8"));
 for (const key of ["getBuiltinModule","binding","_linkedBinding","dlopen","kill","abort","exit","reallyExit","_kill","umask","chdir","setuid","setgid","seteuid","setegid","setgroups","initgroups"]) {
   if (key in process) process[key] = undefined;
 }
@@ -523,7 +523,11 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
   const childDir = realpathSync(mkdtempSync(join(tmpdir(), "pi-wf-")));
   const childFile = join(childDir, "child.cjs");
   writeFileSync(childFile, childSource);
-  const child: ChildProcess = fork(childFile, [String(RPC_LIMIT_BYTES), config], {
+  // NOTE: the config reaches the worker as a file in childDir, the one directory it may read, not as an argument: Windows caps a
+  // command line at 32,767 characters, Linux caps one argument at 128 KiB, and other local users can read a process's arguments.
+  const configFile = join(childDir, "config.json");
+  writeFileSync(configFile, config);
+  const child: ChildProcess = fork(childFile, [String(RPC_LIMIT_BYTES), configFile], {
     execArgv: (() => {
       const filtered: string[] = [];
       const skip = new Set(["--input-type", "-e", "--eval", "-p", "--print"]);
