@@ -41,10 +41,10 @@ async function linuxProcessStart(pid: number, procRoot: string): Promise<number 
 // The /proc/<pid> ctime is not a start time: procfs rebuilds the inode after cache reclaim.
 // A live owner never starts after its stamp; a reused pid starts later.
 export async function processAlive(pid: number, startedAt?: number, procRoot = "/proc"): Promise<boolean> {
+  //NOTE: check before signalling: a pid reused by another user may return EPERM. Within one boot it still counts as alive.
+  if (process.platform !== "linux" && startedAt !== undefined && startedAt + START_MARGIN_MS < Date.now() - uptime() * 1000) return false;
   try { process.kill(pid, 0); } catch (error) { return !isNodeError(error, "ESRCH"); }
-  if (startedAt === undefined) return true;
-  //NOTE: without /proc only a pid reused after a reboot is detected; a pid reused within one boot stays alive.
-  if (process.platform !== "linux") return startedAt + START_MARGIN_MS >= Date.now() - uptime() * 1000;
+  if (startedAt === undefined || process.platform !== "linux") return true;
   const start = await linuxProcessStart(pid, procRoot);
   if (start !== undefined) return start <= startedAt + START_MARGIN_MS;
   try { process.kill(pid, 0); } catch (error) { return !isNodeError(error, "ESRCH"); }

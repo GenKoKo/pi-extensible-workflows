@@ -9,7 +9,7 @@ import { processAlive } from "../src/session-lease.js";
 const linux = { skip: process.platform === "linux" ? false : "needs /proc" };
 const BTIME = 1_700_000_000;
 const TICKS = 5_000;
-const tickRate = Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8" }).trim());
+const tickRate = process.platform === "linux" ? Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8" }).trim()) : 100;
 const START_MS = BTIME * 1000 + (TICKS / tickRate) * 1000;
 
 function fakeProc(comm: string, stat?: string): string {
@@ -57,3 +57,26 @@ void test("an owner stamped before this boot is not alive, whatever process hold
   assert.equal(await processAlive(process.pid, 1), false);
   assert.equal(await processAlive(process.pid, Date.now()), true);
 });
+
+for (const platform of ["darwin", "win32"]) {
+  void test(`a pre-boot owner on ${platform} is abandoned even when its pid cannot be signalled`, async (t) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    assert.ok(original);
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    t.mock.method(process, "kill", () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }); });
+    try {
+      assert.equal(await processAlive(process.pid, 1), false);
+      assert.equal(await processAlive(process.pid, Date.now()), true);
+      assert.equal(await processAlive(process.pid), true);
+    } finally { Object.defineProperty(process, "platform", original); }
+  });
+
+  void test(`a missing pid on ${platform} is dead even with a current-boot stamp`, async (t) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    assert.ok(original);
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    t.mock.method(process, "kill", () => { throw Object.assign(new Error("no such process"), { code: "ESRCH" }); });
+    try { assert.equal(await processAlive(process.pid, Date.now()), false); }
+    finally { Object.defineProperty(process, "platform", original); }
+  });
+}
