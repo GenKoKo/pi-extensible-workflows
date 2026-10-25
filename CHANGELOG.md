@@ -52,6 +52,10 @@
 
 - The settings reference lists `codemodeTools` (global settings only) and `retention`, and says that `workflow.js` and the other files opened in the external editor are temporary copies whose edits are not kept (#331).
 
+### Known security issues
+
+- Pi 1.0.0 still pins vulnerable undici 8.10.2. For this release only, the operator accepted two moderate advisories (GHSA-4qv8-2p9j-2685, GHSA-f72v-6w45-q472) and one high advisory (GHSA-xjj6-f33q-929c). Package verification warns and exempts only those three; other advisories still block publication. No dependency fix or Pi repack is included, and #354 remains open. The exception expires at the next version.
+
 ### Internal
 
 - Core test file parallelism is capped by Node's available CPU count, up to 20 files, instead of always launching 20 in parallel. Browser and worktree test deadlines are unchanged.

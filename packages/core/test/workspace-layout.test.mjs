@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 const coreRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(coreRoot, "../..");
@@ -112,5 +113,24 @@ writeFileSync(${JSON.stringify(trace)}, JSON.stringify({ start, end: Date.now() 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+}
+
+for (const version of ["6.3.0", "6.3.1", "7.0.0"]) {
+  test(`package audit limits the undici exception to release 6.3.0 (${version})`, () => {
+    const source = readFileSync(resolve(repositoryRoot, "scripts/verify-packed-packages.mjs"), "utf8");
+    const policy = source.match(/const ignoredAdvisories =[\s\S]*?(?=  const audit =)/)?.[0];
+    assert.ok(policy, "package audit policy not found");
+    const warnings = [];
+    const ignored = runInNewContext(`${policy}\nignoredAdvisories;`, {
+      json: () => ({ version }), root: repositoryRoot, resolve,
+      process: { stderr: { write: (message) => warnings.push(message) } },
+    });
+    for (const id of ["GHSA-4qv8-2p9j-2685", "GHSA-f72v-6w45-q472", "GHSA-xjj6-f33q-929c"]) {
+      assert.equal(ignored.has(`https://github.com/advisories/${id}`), version === "6.3.0");
+    }
+    assert.equal(ignored.has("https://github.com/advisories/GHSA-unknown"), false);
+    assert.equal(ignored.size, version === "6.3.0" ? 6 : 3);
+    assert.equal(warnings.length, version === "6.3.0" ? 1 : 0);
   });
 }
