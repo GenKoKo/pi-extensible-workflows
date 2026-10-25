@@ -25,11 +25,11 @@ async function waitFor(page: Devtools, expression: string): Promise<void> {
   throw new Error(`Chrome condition did not become true: ${expression}`);
 }
 function findBrowser(): string | undefined {
-  const candidates = [process.env.PI_TRAJECTORY_CHROME, "/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/chromium-browser"];
+  const candidates = [process.env.PI_TRAJECTORY_CHROME, "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
   try {
     for (const version of readdirSync(join(homedir(), ".cache", "ms-playwright"))) candidates.push(join(homedir(), ".cache", "ms-playwright", version, "chrome-linux64", "chrome"));
   } catch { /* The browser cache is optional. */ }
-  for (const name of ["chromium", "google-chrome", "chromium-browser"]) {
+  for (const name of ["google-chrome", "chromium", "chromium-browser"]) {
     try { candidates.push(execFileSync("which", [name], { encoding: "utf8" }).trim()); } catch { /* Try the next browser location. */ }
   }
   const found = candidates.find((candidate) => typeof candidate === "string" && Boolean(candidate) && existsSync(candidate));

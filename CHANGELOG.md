@@ -59,6 +59,7 @@
 ### Internal
 
 - Core test file parallelism is capped by Node's available CPU count, up to 20 files, instead of always launching 20 in parallel. Browser and worktree test deadlines are unchanged.
+- Trajectory browser verification prefers installed stable Google Chrome over the runner's snapshot Chromium build, preserving `PI_TRAJECTORY_CHROME` overrides and the Chromium fallback.
 - Core reads a Pi session file whole, as Pi does, and the complete lines its agent appends to it, and draws its records with Pi's own chat components, for the `/agents` transcript pane (#331).
 
 ## [6.2.2] - 2026-10-18

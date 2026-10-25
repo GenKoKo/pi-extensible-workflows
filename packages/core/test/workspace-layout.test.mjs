@@ -134,3 +134,24 @@ for (const version of ["6.3.0", "6.3.1", "7.0.0"]) {
     assert.equal(warnings.length, version === "6.3.0" ? 1 : 0);
   });
 }
+
+test("Trajectory browser selection prefers stable Chrome, preserving overrides and Chromium fallback", () => {
+  const source = readFileSync(resolve(coreRoot, "trajectory/test/trajectory-browser.test.ts"), "utf8");
+  const selection = source.match(/function findBrowser\(\): string \| undefined \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(selection, "browser selector not found");
+  const stable = "/usr/bin/google-chrome";
+  const snapshot = "/usr/bin/chromium";
+  for (const [override, available, expected] of [
+    [undefined, [stable, snapshot], stable],
+    ["/custom/chrome", [stable, snapshot, "/custom/chrome"], "/custom/chrome"],
+    [undefined, [snapshot], snapshot],
+    ["/missing/chrome", [stable, snapshot], stable],
+  ]) {
+    const selected = runInNewContext(`(${selection.replace("(): string | undefined", "()")})()`, {
+      process: { env: { PI_TRAJECTORY_CHROME: override } },
+      homedir: () => "/unused", readdirSync: () => [], execFileSync: () => "", join,
+      existsSync: (path) => available.includes(path),
+    });
+    assert.equal(selected, expected);
+  }
+});
