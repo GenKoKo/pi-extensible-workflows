@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import { decodeOwnershipRecords } from "../src/decoders.js";
 const capabilities = {
   models: new Set(["openai/gpt"]), tools: new Set(["read"]),
 };
+const linux = { skip: process.platform === "linux" ? false : "needs /proc" };
 
 void test("persisted opaque role options remain extension-owned JSON", () => {
   const entries = decodeOwnershipRecords([{ id: "owner", label: "owner", state: "completed", options: { label: "owner", cwd: "/repo", tools: [], agentOptions: { role: { name: "reviewer" } } } }]);
@@ -376,6 +377,50 @@ void test("permission-sandboxed child cannot read files, reach network, or spawn
   const hostile = runWorkflow(`export const meta={name:'hostile',description:'hostile'}; try { const fs = globalThis.constructor.constructor('return require("node:fs")')(); return fs.readFileSync('/etc/hostname','utf8'); } catch(e) { return 'blocked:'+e.code; }`);
   const result = await hostile.result as string;
   assert.match(result, /blocked:/);
+});
+
+void test("workflow source and args stay out of the worker's command line, which any local user can read", linux, async () => {
+  const marker = `argv-marker-${String(process.pid)}-${String(Date.now())}`;
+  const run = runWorkflow(`await new Promise(() => {});`, { marker });
+  const workerCommandLines = (): string[] => readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).flatMap((pid) => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const ppid = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1];
+      const commandLine = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      return ppid === String(process.pid) && commandLine.includes("child.cjs") ? [commandLine] : [];
+    } catch { return []; }
+  });
+  try {
+    let commandLines = workerCommandLines();
+    for (let attempt = 0; commandLines.length === 0 && attempt < 100; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      commandLines = workerCommandLines();
+    }
+    assert.equal(commandLines.length, 1);
+    assert.ok(!commandLines[0]?.includes(marker), "the worker's command line exposes workflow args");
+  } finally {
+    run.cancel();
+    await run.result.catch(() => undefined);
+  }
+});
+
+void test("a worker that fork() cannot start rejects the run result and removes its temporary directory", linux, async () => {
+  // Linux refuses to start a process with an environment string over 128 KiB, and fork() throws E2BIG synchronously.
+  const originalTmpdir = process.env.TMPDIR;
+  const root = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-unstartable-"));
+  process.env.TMPDIR = root;
+  process.env.PI_EXTENSIBLE_WORKFLOWS_TEST_OVERSIZED = "x".repeat(200_000);
+  try {
+    let execution: ReturnType<typeof runWorkflow> | undefined;
+    assert.doesNotThrow(() => { execution = runWorkflow("return 1;"); });
+    await assert.rejects(execution?.result ?? Promise.resolve(), (error: unknown) => error instanceof WorkflowError && error.code === "INTERNAL_ERROR" && /E2BIG/.test(error.message));
+    assert.deepEqual(readdirSync(root), []);
+  } finally {
+    delete process.env.PI_EXTENSIBLE_WORKFLOWS_TEST_OVERSIZED;
+    if (originalTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpdir;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 void test("workflow workers support a symlinked temporary directory", async () => {
