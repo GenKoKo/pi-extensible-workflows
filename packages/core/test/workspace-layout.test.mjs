@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -73,3 +74,43 @@ test("pack staging does not overwrite a package-local changelog", () => {
     execFileSync(process.execPath, [script, "clean"]);
   }
 });
+
+for (const cpus of [1, 2]) {
+  test(`core test runner limits parallel files to ${cpus} available CPU(s)`, () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-core-runner-"));
+    try {
+      const preload = join(root, "cpus.cjs");
+      writeFileSync(preload, `require("node:os").availableParallelism = () => ${cpus};`);
+      const traces = Array.from({ length: 4 }, (_, index) => join(root, `${index}.json`));
+      const files = traces.map((trace, index) => {
+        const file = join(root, `${index}.test.mjs`);
+        writeFileSync(file, `import { writeFileSync } from "node:fs";
+const start = Date.now();
+await new Promise((resolve) => setTimeout(resolve, 250));
+writeFileSync(${JSON.stringify(trace)}, JSON.stringify({ start, end: Date.now() }));`);
+        return file;
+      });
+      execFileSync("sh", ["-c", readPackage(resolve(coreRoot, "package.json")).scripts["test:run"]], {
+        cwd: coreRoot,
+        env: {
+          ...process.env,
+          PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${JSON.stringify(preload)}`,
+          NODE_TEST_CONTEXT: undefined,
+          TEST_FILES: files.join(" "),
+        },
+        stdio: "pipe",
+      });
+      const events = traces.flatMap((trace) => {
+        const { start, end } = readPackage(trace);
+        return [{ time: start, delta: 1 }, { time: end, delta: -1 }];
+      }).sort((left, right) => left.time - right.time || left.delta - right.delta);
+      let active = 0;
+      let peak = 0;
+      for (const { delta } of events) { active += delta; peak = Math.max(peak, active); }
+      assert.ok(peak <= cpus, `${peak} test files ran together on ${cpus} CPU(s)`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

@@ -345,6 +345,7 @@
 <span class="tok-command">npm</span> run test:packages</code></pre>
         <p>Pull requests and main-branch pushes run these same commands on Node.js 24. <code>check</code> builds and type-checks all packages, lints, runs the workspace and template tests, and validates documentation links. <code>test:packages</code> additionally packs and installs all three artifacts in temporary directories, checks imports and entrypoints, exercises the installed CLI and Pi package discovery, and runs npm audit. It requires npm registry access but does not publish anything. Release checks remain in <a href="https://github.com/vekexasia/pi-extensible-workflows/blob/main/RELEASING.md">RELEASING.md</a>.</p>
         <h3>Focused iteration</h3>
+        <p>Core runs at most 20 test files in parallel, capped by Node's available CPU parallelism. Each file runs its tests serially; browser and worktree integration tests keep their existing deadlines.</p>
         <p>Build before running compiled tests; otherwise <code>test:run</code> can exercise stale output. <code>TEST_FILES</code> paths are relative to the selected workspace. For example:</p>
         <pre><code class="language-shell"><span class="tok-command">npm</span> run build --workspace=packages/core
 TEST_FILES='dist/test/starter.test.js' <span class="tok-command">npm</span> run test:run --workspace=packages/core
