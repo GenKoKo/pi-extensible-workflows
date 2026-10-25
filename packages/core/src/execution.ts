@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { RunStore, structuralPath as operationPath } from "./persistence.js";
 import type { AgentAttempt } from "./agent-execution.js";
-import type { AgentIdentity, AgentAttemptSummary, FunctionIdentity, JsonValue, ShellIdentity, ShellOptions, ShellResult, ToolIdentity, WorkflowAgentSessionReference, WorkflowBridge, WorkflowErrorCode, WorkflowExecution } from "./types.js";
+import type { AgentIdentity, AgentAttemptSummary, FunctionIdentity, JsonValue, ShellIdentity, ShellOptions, ShellResult, ToolIdentity, WorkflowAgentSessionReference, WorkflowBridge, WorkflowErrorCode, WorkflowExecution, WorkflowFunctionContext } from "./types.js";
 import { WorkflowError, sumAccounting, zeroAccounting } from "./types.js";
 import { asWorkflowError, errorText, fail, isWorkflowAuthored, isWorkflowErrorCode, jsonDigest, jsonValue, markWorkflowAuthored, object, positiveInteger } from "./utils.js";
 import { instrumentWorkflow, validateAgentOptions, validateShellCommand, validateShellOptions } from "./validation.js";
@@ -44,6 +44,41 @@ const OUTCOME_ERRORS = new Set<string>(["AGENT_TIMEOUT", "AGENT_FAILED", "RESULT
 /** Script handle names may not start with this: registered-function handles are journaled under it. */
 export const FUNCTION_HANDLE_PREFIX = "function-handle";
 const WORK_RESULT_BRAND = "__workResult";
+
+// Keep this factory self-contained: the worker embeds the same implementation used by registered functions.
+export function createWorkflowTools(scope: {
+  structuralPath: () => readonly string[];
+  worktreeOwner: () => string | undefined;
+  call: (identifier: string, args: Record<string, JsonValue>, identity: ToolIdentity) => Promise<JsonValue>;
+  invalid: (message: string) => Error;
+}): WorkflowFunctionContext["tools"] {
+  const notTools = new Set(["then", "toJSON", "toString", "valueOf", "constructor"]);
+  const sortedJson = (value: unknown): unknown => Array.isArray(value) ? value.map(sortedJson) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedJson((value as Record<string, unknown>)[key])])) : value;
+  const occurrences = new Map<string, number>();
+  const toolCall = (id: string) => (...values: unknown[]): Promise<JsonValue> => {
+    if (scope.worktreeOwner()) throw scope.invalid("tools." + id + " is unavailable inside withWorktree: session tools resolve paths against the session working directory");
+    if (values.length > 1 || values[0] !== undefined && (!values[0] || typeof values[0] !== "object" || Array.isArray(values[0]))) throw scope.invalid("tools." + id + " takes one arguments object");
+    const args = (values[0] === undefined ? {} : values[0]) as Record<string, JsonValue>;
+    const structuralPath = scope.structuralPath();
+    const key = JSON.stringify([structuralPath, id, sortedJson(args)]);
+    const occurrence = (occurrences.get(key) ?? 0) + 1;
+    occurrences.set(key, occurrence);
+    const result = scope.call(id, args, { structuralPath: [...structuralPath], occurrence });
+    const forgottenAwait = (use: string) => () => { throw scope.invalid("Workflow tool result is a Promise; await it before " + use); };
+    return Object.defineProperties(result, {
+      toJSON: { value: forgottenAwait("serialization") },
+      toString: { value: forgottenAwait("interpolation") },
+      [Symbol.toPrimitive]: { value: forgottenAwait("interpolation") },
+    });
+  };
+  return new Proxy(Object.create(null) as WorkflowFunctionContext["tools"], {
+    get: (_target, key) => typeof key === "string" && !notTools.has(key) ? toolCall(key) : undefined,
+    // Probing would branch on the session that resumed the run, before consulting the journal.
+    has: () => { throw scope.invalid("Workflow scripts cannot probe tools with 'in'; call tools.<name>(...) directly, and the launch checks that the tool exists"); },
+    set: () => false,
+    defineProperty: () => false,
+  });
+}
 
 const childSource = String.raw`
 "use strict";
@@ -279,25 +314,11 @@ const functions = Object.freeze(Object.fromEntries(Object.entries(config.functio
 // replays journaled calls even when the tool is gone; the host rejects identifiers it cannot call.
 // A call is the n-th call with the same arguments in its scope, so replay does not depend on the
 // order in which concurrent calls start.
-const NOT_TOOLS = new Set(["then", "toJSON", "toString", "valueOf", "constructor"]);
-const sortedJson = value => Array.isArray(value) ? value.map(sortedJson) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sortedJson(value[key])])) : value;
-const toolOccurrences = new Map();
-const toolCall = id => (...values) => {
-  if (worktreeOwners.getStore()) throw workError("INVALID_METADATA", "tools." + id + " is unavailable inside withWorktree: session tools resolve paths against the session working directory");
-  if (values.length > 1 || values[0] !== undefined && (!values[0] || typeof values[0] !== "object" || Array.isArray(values[0]))) throw workError("INVALID_METADATA", "tools." + id + " takes one arguments object");
-  const args = values[0] === undefined ? {} : values[0];
-  const structuralPath = inheritedAgentPath.getStore() || [];
-  const key = JSON.stringify([structuralPath, id, sortedJson(args)]);
-  const occurrence = (toolOccurrences.get(key) || 0) + 1;
-  toolOccurrences.set(key, occurrence);
-  return guardedResult(rpc("tool", [id, args, { structuralPath: [...structuralPath], occurrence }]), "tool");
-};
-const tools = new Proxy(Object.create(null), {
-  get: (_target, key) => typeof key === "string" && !NOT_TOOLS.has(key) ? toolCall(key) : undefined,
-  // Probing would branch on the session that resumed the run; the launch already checks named tools.
-  has: () => { throw workError("INVALID_METADATA", "Workflow scripts cannot probe tools with 'in'; call tools.<name>(...) directly, and the launch checks that the tool exists"); },
-  set: () => false,
-  defineProperty: () => false,
+const tools = (${createWorkflowTools.toString()})({
+  structuralPath: () => inheritedAgentPath.getStore() || [],
+  worktreeOwner: () => worktreeOwners.getStore(),
+  call: (id, args, identity) => rpc("tool", [id, args, identity]),
+  invalid: message => workError("INVALID_METADATA", message),
 });
 const recordEntries = (value, kind) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw workError("INVALID_METADATA", kind + " must be a record");

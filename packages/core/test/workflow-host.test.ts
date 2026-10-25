@@ -8,7 +8,7 @@ import { decodeTestJson, decodeTestJsonRecord, decodeTestRunDetails, decodeTestR
 import { Theme, type InlineExtension, type ThemeColor, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TObject, type TOptional, type TString } from "typebox";
 import { WORKFLOW_TOOL_DESCRIPTION, WORKFLOW_TOOL_PARAMETERS, WORKFLOW_TOOL_PROMPT_SNIPPET, navigatorAttentionSort } from "../src/host.js";
-import workflowExtension, { createLaunchSnapshot, DEFAULT_SETTINGS, defineWorkflowFunction, formatWorkflowPreview, preflight, registerWorkflowExtension, RunStore, structuralPath, WorkflowError, WorkflowRegistry, type AgentOptions, type PersistedRun, type WorkflowExtension, type WorkflowOrchestrationContext } from "../src/index.js";
+import workflowExtension, { createLaunchSnapshot, DEFAULT_SETTINGS, defineWorkflowFunction, formatWorkflowPreview, preflight, registerWorkflowExtension, RunStore, structuralPath, WorkflowError, WorkflowRegistry, type AgentOptions, type PersistedRun, type WorkflowExtension, type WorkflowFunctionContext, type WorkflowOrchestrationContext, type JsonValue } from "../src/index.js";
 import { loadingRegistry } from "../src/registry.js";
 import type { SessionInput } from "../src/agent-execution.js";
 import { listRunIds } from "../src/persistence.js";
@@ -122,6 +122,24 @@ const typeCheckWorktreeContext = (context: WorkflowOrchestrationContext): void =
   void context.withWorktree(() => "value");
 };
 void typeCheckWorktreeContext;
+const typeCheckFunctionTools = (context: WorkflowFunctionContext): void => {
+  const tools: Record<string, (args: Record<string, JsonValue>) => Promise<JsonValue>> = context.tools;
+  void tools;
+  const call = context.tools.retail_find;
+  assert.ok(call);
+  const result: Promise<JsonValue> = call({ query: "item", nested: { count: 1 }, values: [null, true] });
+  void result;
+  // @ts-expect-error session tools take one arguments object
+  void call("item");
+  // @ts-expect-error session tool arguments must be JSON-compatible
+  void call({ query: () => "item" });
+  // @ts-expect-error session tools require their arguments object
+  void call();
+  // @ts-expect-error session tools return JSON, not a statically known result shape
+  const knownResult: Promise<{ found: boolean }> = call({});
+  void knownResult;
+};
+void typeCheckFunctionTools;
 
 void test("accepts but ignores legacy top-level extension descriptions", () => {
   const registry = new WorkflowRegistry();

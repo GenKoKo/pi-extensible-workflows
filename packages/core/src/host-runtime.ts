@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { type AgentProviderFailure, type AgentProviderRecovery, WorkflowAgentExecutor } from "./agent-execution.js";
 import { type WorkflowBudgetRuntime } from "./budget.js";
 import { type PersistedRun, type RunStore, type WorktreeReference } from "./persistence.js";
-import { FUNCTION_HANDLE_PREFIX } from "./execution.js";
+import { createWorkflowTools, encoded, FUNCTION_HANDLE_PREFIX } from "./execution.js";
 import { deepFreeze, errorCode, errorText, fail, isWorkflowErrorCode, jsonDigest, jsonValue, object } from "./utils.js";
 import { validateAgentOptions, validateShellOptions, workflowPrompt } from "./validation.js";
 import { type WorkflowRegistryApi } from "./registry.js";
@@ -328,6 +328,16 @@ export function withWorkflowFunctions(bridge: WorkflowBridge, store: RunStore, r
     const context: WorkflowFunctionContext = {
       settings: deepFreeze(structuredClone(settings)),
       run: runContext,
+      tools: createWorkflowTools({
+        structuralPath: () => ["function", path, ...(inheritedHostAgentPath.getStore() ?? structuralPath)],
+        worktreeOwner: () => inheritedHostWorktreeOwner.getStore() ?? worktreeOwner,
+        call: async (identifier, args, identity) => {
+          if (!bridge.tool) fail("UNKNOWN_TOOL", `tools.${identifier} is unavailable: this run has no session tools`);
+          const toolArgs = JSON.parse(encoded(args)) as Record<string, JsonValue>;
+          return bridge.tool(identifier, toolArgs, signal, identity);
+        },
+        invalid: (message) => new WorkflowError("INVALID_METADATA", message),
+      }),
       invoke: async (targetName, targetInput, label) => {
         if (label !== undefined && (typeof label !== "string" || !label.trim())) fail("INVALID_METADATA", "invoke label must be a non-empty string");
         const inherited = inheritedHostAgentPath.getStore() ?? structuralPath;

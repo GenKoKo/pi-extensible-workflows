@@ -213,7 +213,7 @@ A function has exactly `description`, `input`, `output`, and `run`. Schemas must
 
 For TypeScript extensions, prefer TypeBox schemas with `defineWorkflowFunction()`, as in the example above. The helper infers the read-only `run` input type from `input` and checks its synchronous or asynchronous return type against `output`. Hand-written JSON Schema remains supported but does not provide this inference.
 
-The `run` callback also receives a read-only host context for functions that explicitly need orchestration. Keep workflow composition and workflow-specific rules in the bundled skill rather than copying them into an extension guide.
+The `run` callback also receives a read-only host context for functions that explicitly need orchestration, including `ctx.tools.<name>(args)` for direct session-tool calls. See the shared [session-tool contract](developers.html#session-tools) for results, name checks, restrictions, and replay, and the [function context reference](extensions.html#functions) for its types. Keep workflow composition and workflow-specific rules in the bundled skill rather than copying them into an extension guide.
 
 Completed function calls are journaled and can replay without running the implementation again. Design external effects to be idempotent or bounded. A host crash after an external effect and before journaling can repeat that effect.
 
