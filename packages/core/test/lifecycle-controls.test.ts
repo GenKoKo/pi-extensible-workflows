@@ -493,7 +493,7 @@ void test("a cold resume whose worker cannot be started fails the run instead of
   let secondStart: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
   let secondCommand: ((args: string, ctx: unknown) => Promise<void>) | undefined;
   let secondShutdown: (() => Promise<void>) | undefined;
-  workflowExtension(testExtensionApi({ registerTool(tool: Tool) { secondTools.push(tool); }, registerCommand(_name: string, value: { handler: NonNullable<typeof secondCommand> }) { secondCommand = value.handler; }, on(name: string, handler: unknown) { if (name === "session_start") secondStart = handler as typeof secondStart; if (name === "session_shutdown") secondShutdown = handler as typeof secondShutdown; }, sendMessage() {}, getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"] }), home, async () => {}, testTransport(createHeldSession));
+  workflowExtension(testExtensionApi({ registerTool(tool: Tool) { secondTools.push(tool); }, registerCommand(name: string, value: { handler: NonNullable<typeof secondCommand> }) { if (name === "workflow") secondCommand = value.handler; }, on(name: string, handler: unknown) { if (name === "session_start") secondStart = handler as typeof secondStart; if (name === "session_shutdown") secondShutdown = handler as typeof secondShutdown; }, sendMessage() {}, getThinkingLevel: () => "medium", getActiveTools: () => ["workflow"] }), home, async () => {}, testTransport(createHeldSession));
   // The worker's temporary directory cannot be created under a regular file.
   const tmpdirVariable = process.platform === "win32" ? "TEMP" : "TMPDIR";
   const originalTmpdir = process.env[tmpdirVariable];
