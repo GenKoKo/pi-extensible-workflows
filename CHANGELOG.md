@@ -1,6 +1,10 @@
 # Changelog
 ## Unreleased
 
+## [6.3.0] - 2026-10-25
+
+**This minor version contains breaking changes.** Shipping them as 6.3.0 is an explicit operator choice, not a SemVer-compliant version. Read the breaking changes before upgrading.
+
 ### Breaking changes
 
 - In Pi's TUI, `/workflow` opens the `/agents` workspace on the session's runs and `/subagents` on its subagents. Their dashboards are removed (#333):
@@ -12,6 +16,7 @@
 
 ### New capabilities
 
+- Registered workflow functions can call session tools through `ctx.tools.<name>(args)`, with the same validation, hooks, result shapes and journaled replay as `tools.<name>(args)` in inline scripts. Registered functions check tool availability at call time.
 - `/agents` opens a full-screen workspace over Pi's TUI: a sidebar with this session's workflow runs (phases, operation scopes, shells, and agents) and its subagents, and beside it the selected agent's full transcript, drawn as Pi's chat draws it and updated live while the agent runs. Other nodes show their details. The hint row lists the keys; `esc` gives Pi its screen back (#332).
 - In `/agents`, `a` opens the selected node's action menu: a run's actions, then `Model aliases` and the bulk deletes; an agent's actions, registered ones such as Herdr's included; a subagent's actions; the Subagents group's bulk deletes. Copies and the external editors run in place; registered actions run detached in the TUI workspace, their working message and failure notice show in its status row (Pi's own working message is cleared when the workspace opens, and an action that settles after `/reload` or `/new` shows nothing), and their dialogs are refused there; any other action closes the workspace, runs with Pi's dialogs, and opens it again on the same node. `d` shows an agent's details instead of its transcript. Steer opens Pi's editor dialog, also in the `/subagents` picker outside the TUI (#333).
 - `/agents` marks what needs a person: `⚠ quiet` or `⚠ stalled` on a running agent or subagent without a sign of life for 3 or 10 minutes, and `◆ waiting` on a run awaiting input. `n`/`N` select the next or previous such node, failed agents and runs that have used up their budget included. The title shows the session totals (running, tokens, cost). `f` follows a running agent with its transcript at the tail, and `/` filters the sidebar by name, ID, or `state:<state>` (#334).
@@ -49,6 +54,7 @@
 
 ### Internal
 
+- Core test file parallelism is capped by Node's available CPU count, up to 20 files, instead of always launching 20 in parallel. Browser and worktree test deadlines are unchanged.
 - Core reads a Pi session file whole, as Pi does, and the complete lines its agent appends to it, and draws its records with Pi's own chat components, for the `/agents` transcript pane (#331).
 
 ## [6.2.2] - 2026-10-18
