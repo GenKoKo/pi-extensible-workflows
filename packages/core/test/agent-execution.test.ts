@@ -1148,6 +1148,34 @@ void test("bare no-policy local sessions exclude the workflow host and retain co
     rmSync(rootDir, { recursive: true, force: true });
   }
 });
+void test("child sessions exclude host-kernel extensions from the extension resolution", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-host-kernel-"));
+  const agentDir = join(rootDir, "agent");
+  const cwd = join(rootDir, "project");
+  mkdirSync(agentDir, { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {} }));
+  writeFileSync(join(agentDir, "auth.json"), "{}");
+  const benignExtension = join(rootDir, "benign-extension.mjs");
+  const kernelExtension = join(rootDir, "pi-fabric", "index.mjs");
+  mkdirSync(dirname(kernelExtension), { recursive: true });
+  writeFileSync(benignExtension, 'export default function() {}');
+  writeFileSync(kernelExtension, 'export default function() {}');
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [realpathSync(process.cwd())], extensions: [join(process.cwd(), "dist/src/index.js"), benignExtension, kernelExtension] }));
+  try {
+    const session = await createLocalPiSession({ cwd, agentDir, model: { provider: "openai-codex", model: "gpt-5.6-sol" }, tools: [], sessionLabel: "host-kernel-exclusion" });
+    try {
+      const extensions = session.getResourceInspection().extensions;
+      assert.ok(extensions.includes(realpathSync(benignExtension)));
+      assert.equal(extensions.some((path) => path.includes("pi-fabric")), false);
+    } finally {
+      await session.dispose();
+    }
+  } finally {
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
 void test("local workflow sessions run startup once and surface event listener failures", async () => {
   let sessionStarts = 0;
   const extensionFactory: NonNullable<SessionInput["extensionFactories"]>[number] = (pi) => {

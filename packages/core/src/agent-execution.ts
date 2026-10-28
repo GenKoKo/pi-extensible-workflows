@@ -365,6 +365,9 @@ function builtinExtensions(): InlineExtension[] {
   ];
 }
 const BUILTIN_EXTENSION_PREFIX = "builtin:";
+const HOST_KERNEL_EXTENSION_NAMES = ["pi-fabric"];
+/** Host-session extensions whose kernel takes over the tool surface: loaded into a workflow child, the kernel becomes the only model-visible tool and hides the prepared workflow_result, so every agent() step fails with RESULT_INVALID. */
+function isHostKernelExtension(path: string): boolean { return HOST_KERNEL_EXTENSION_NAMES.some((name) => path.includes(name)); }
 function isLlamaModel(model: ModelSpec): boolean { return model.provider === "llama.cpp"; }
 /**
  * Pi only extends resources with paths that loaded extensions return from resources_discover. Recording them, normalized as
@@ -425,7 +428,7 @@ async function createLocalPiSessionHandle(input: SessionInput, sessionStartEvent
     const discoveredExtensions = [...new Set(resolved.extensions.filter(({ enabled, metadata }) => enabled && (policy.projectTrusted || metadata.scope !== "project")).map(({ path }) => extensionIdentity(path)))];
     const selectorSources = policy.selectorSources;
     const selectedExtensions = selectResourcesByLayers(resourceSelectorLayers(selectorSources, "extensions"), discoveredExtensions).filter((path) => policy.capabilities === undefined || policy.capabilities.extensions.includes(path));
-    const extensionPaths = selectedExtensions.filter((path) => path.startsWith(BUILTIN_EXTENSION_PREFIX) || !isWorkflowHostEntry(path));
+    const extensionPaths = selectedExtensions.filter((path) => path.startsWith(BUILTIN_EXTENSION_PREFIX) || !isWorkflowHostEntry(path)).filter((path) => !isHostKernelExtension(path));
     policy.selectedExtensions = selectedExtensions;
     policy.unmatchedExtensions = unmatchedResourcePatterns(policy.effective.extensions, discoveredExtensions);
     const skillPaths = [...new Set(resolved.skills.filter(({ enabled, metadata }) => enabled && (policy.projectTrusted || metadata.scope !== "project")).map(({ path }) => path))];
@@ -463,7 +466,7 @@ async function createLocalPiSessionHandle(input: SessionInput, sessionStartEvent
     settingsManager = SettingsManager.create(input.cwd, agentDir, { projectTrusted: true });
     const packageManager = new DefaultPackageManager({ cwd: input.cwd, agentDir, settingsManager, builtinExtensions: builtinNames });
     const resolved = await packageManager.resolve();
-    const extensionPaths = [...new Set(resolved.extensions.filter(({ enabled }) => enabled).map(({ path }) => extensionIdentity(path)).filter((path) => path.startsWith(BUILTIN_EXTENSION_PREFIX) || !isWorkflowHostEntry(path)))];
+    const extensionPaths = [...new Set(resolved.extensions.filter(({ enabled }) => enabled).map(({ path }) => extensionIdentity(path)).filter((path) => path.startsWith(BUILTIN_EXTENSION_PREFIX) || !isWorkflowHostEntry(path)).filter((path) => !isHostKernelExtension(path)))];
     resourceLoader = new DefaultResourceLoader({ cwd: input.cwd, agentDir, settingsManager, noExtensions: true, additionalExtensionPaths: extensionPaths, ...(input.additionalSkillPaths?.length ? { additionalSkillPaths: [...input.additionalSkillPaths] } : {}), extensionFactories, ...(contextFilesOverride ? { agentsFilesOverride: contextFilesOverride } : {}), ...systemPromptOptions, ...(input.systemPromptAppend ? { appendSystemPromptOverride: (base) => [...base, input.systemPromptAppend ?? ""] } : {}) });
     await resourceLoader.reload();
   }

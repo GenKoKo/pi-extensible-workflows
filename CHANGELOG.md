@@ -1,6 +1,8 @@
 # Changelog
 ## Unreleased
 
+- Workflow agent sessions now exclude host-session kernel extensions (currently pi-fabric): loading one into a child made its kernel the only model-visible tool, hid the prepared workflow_result, and every agent() step failed with RESULT_INVALID.
+
 ## [6.3.0] - 2026-10-25
 
 **This minor version contains breaking changes.** Shipping them as 6.3.0 is an explicit operator choice, not a SemVer-compliant version. Read the breaking changes before upgrading.
